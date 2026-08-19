@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "A single-binary Minecraft server control panel"
+build = "build.rs"
 
 [[bin]]
 name = "mcpanel"
