@@ -16,5 +16,27 @@ fn main() {
         println!("cargo:warning=could not create {}: {e}", dist.display());
     }
 
-    println!("cargo:rerun-if-changed=../../web/dist");
+    // Every embedded file is declared individually. Watching only the directory
+    // is not enough: `rust-embed` bakes the files in at compile time, and cargo
+    // will happily skip recompiling when a nested asset changed but the top
+    // directory's own timestamp did not — leaving a stale UI inside a binary
+    // that was just rebuilt.
+    println!("cargo:rerun-if-changed={}", dist.display());
+    watch(&dist);
+}
+
+/// Declare every file under `dir` as a build input.
+fn watch(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        println!("cargo:rerun-if-changed={}", path.display());
+
+        if path.is_dir() {
+            watch(&path);
+        }
+    }
 }

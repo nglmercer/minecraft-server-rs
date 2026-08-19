@@ -1,0 +1,134 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A superseded run on the same branch is of no interest once a newer commit
+# exists, and CI minutes are not free.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Backtraces cost nothing here and turn a bare assertion failure into
+  # something diagnosable without pushing a "add a println" commit.
+  RUST_BACKTRACE: 1
+
+jobs:
+  backend:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform failing should not hide the result on the other.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # java-path and minecraft-core are submodules; without this the
+          # workspace does not resolve at all.
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+
+      - name: Format
+        # Checked on one platform only: the result cannot differ, and running it
+        # twice only doubles the time it takes to tell you the same thing.
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        # Windows is in the matrix deliberately. The supervisor tests spawn real
+        # child processes, and process handling is the part most likely to
+        # differ between platforms — so it is the part least worth assuming.
+        run: cargo test --workspace
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        working-directory: web
+        run: npm ci
+
+      - name: Test
+        working-directory: web
+        run: npm test
+
+      - name: Build
+        working-directory: web
+        # Also type-checks: `npm run build` runs tsc, which is stricter than
+        # vitest and has already caught an error the test run did not.
+        run: npm run build
+
+  release:
+    name: Release binary
+    runs-on: ubuntu-latest
+    # Only worth building once the pieces it is made of are known to be sound.
+    needs: [backend, frontend]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build
+        # Exercises build.sh itself, so the documented way to build the project
+        # is the way CI builds it.
+        run: ./build.sh
+
+      - name: Check the frontend was embedded
+        # A release binary that quietly serves the "frontend not built" page
+        # would otherwise look like a successful build.
+        run: |
+          ./target/release/mcpanel --data-dir ./ci-data --bind 127.0.0.1:8099 &
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8099/ >/dev/null && break
+            sleep 1
+          done
+          page=$(curl -s http://127.0.0.1:8099/)
+          echo "$page" | grep -q 'assets/index-' \
+            || { echo "::error::the release binary is not serving the built frontend"; echo "$page" | head -20; exit 1; }
+          echo "frontend embedded and served"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcpanel-linux-x86_64
+          path: target/release/mcpanel
+          retention-days: 14
