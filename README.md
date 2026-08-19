@@ -226,12 +226,13 @@ rather than assumed:
 
 Two caveats worth knowing:
 
-* **The supervisor tests are `#![cfg(unix)]`.** They drive a shell script
-  standing in for the JVM, so on Windows they are skipped rather than failing —
-  which means process-lifecycle behaviour is *not* covered there. It builds, and
-  the logic is platform-independent, but that is an argument, not a test.
-* `build.sh` is a shell script. On Windows run the two steps it wraps:
-  `cd web && npm install && npm run build`, then `cargo build --release`.
+The Rust test suite runs on Windows too — the stand-in for the JVM is a small
+Rust binary rather than a shell script, so process supervision is genuinely
+exercised there rather than skipped. Verified by running the Windows test
+binaries under Wine.
+
+One caveat: `build.sh` is a shell script. On Windows run the two steps it wraps:
+`cd web && npm install && npm run build`, then `cargo build --release`.
 
 [`sysinfo`]: https://crates.io/crates/sysinfo
 
@@ -259,18 +260,29 @@ compile error rather than a `{missing}` in the UI. To add a language, copy
 ## Testing
 
 ```sh
-cargo test --workspace
+cargo test --workspace     # 87 backend tests
+cd web && npm test         # 29 frontend tests
 ```
 
-87 tests. The supervisor ones spawn real child processes against a shell script
-standing in for the JVM, so the status machine, stdio pumps, graceful stop, kill
-fallback and restart policy are exercised for real rather than mocked. Only the
-Java/jar provisioning is stubbed — downloading a JDK is not a unit test's job.
+The supervisor tests spawn real child processes against a stand-in for the JVM,
+so the status machine, stdio pumps, graceful stop, kill fallback and restart
+policy are exercised for real rather than mocked. Only the Java/jar provisioning
+is stubbed — downloading a JDK is not a unit test's job.
 
-That fake JVM validates its `-jar` argument and fails with the real launcher's
+That stand-in validates its `-jar` argument and fails with the real launcher's
 message, which matters more than it sounds: an earlier version ignored its
 arguments entirely, and a launch bug shipped straight past a green test suite.
 When a test double is more forgiving than the real thing, it stops testing.
+It is a Rust binary rather than a shell script so the same tests run on Windows,
+and its behaviour is driven through `server_args` — the same path a real
+server's arguments take.
+
+The frontend tests cover the parts that have actually broken: the API client's
+session handling and ticketed downloads, the contextual menu that makes rows
+usable without hover, the dialogs that replaced `confirm`/`prompt`, and the two
+formatting helpers. The dictionary test asserts that both languages carry the
+same keys *and the same placeholders*, so a translation cannot quietly drop a
+`{count}`.
 
 ## Status
 

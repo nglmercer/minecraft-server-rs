@@ -4,6 +4,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Minecraft server lifecycle manager: environment provisioning, process supervision, crash recovery"
+exclude = ["tests/"]
+
+# Built for the integration tests, which reach it through CARGO_BIN_EXE_.
+# Excluded from the published crate: it is test scaffolding, not a tool.
+[[bin]]
+name = "guardian-fake-java"
+path = "tests/support/fake_java.rs"
+test = false
+doc = false
 
 [dependencies]
 java-path.workspace = true

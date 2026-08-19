@@ -323,7 +323,11 @@ mod tests {
 
     #[test]
     fn absolute_paths_are_left_alone() {
-        let path = PathBuf::from("/srv/mc/server.jar");
+        // Built from the cwd rather than written as a literal: "/srv/mc" is not
+        // absolute on Windows, which has no drive letter to anchor it.
+        let path = std::env::current_dir().unwrap().join("server.jar");
+        assert!(path.is_absolute());
+
         assert_eq!(absolute(path.clone()), path);
     }
 

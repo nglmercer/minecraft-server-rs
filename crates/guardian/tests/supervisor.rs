@@ -3,8 +3,10 @@
 //! These tests spawn a real child process and exercise the real status machine,
 //! stdio pumps and restart policy — only the Java/jar provisioning is stubbed,
 //! because downloading a JDK is not something a unit test should do.
-
-#![cfg(unix)]
+//!
+//! The stand-in launcher is `tests/support/fake_java.rs`, a real binary, so
+//! these run on Windows as well as Unix. Its behaviour is driven through
+//! `server_args`, which is the same path a real server's arguments take.
 
 use guardian::events::Stream;
 use guardian::{Guardian, GuardianConfig, ServerConfig, ServerEnvironment, ServerEvent, ServerStatus};
@@ -12,50 +14,28 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::broadcast::Receiver;
 
-/// Write an executable stand-in for `java` that behaves like a server.
-///
-/// It validates `-jar` the way the real launcher does, and fails with the same
-/// message. Ignoring the argument would make these tests blind to a whole class
-/// of launch bugs — which is exactly how a broken relative jar path shipped.
-fn fake_java(dir: &Path, body: &str) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-
-    let path = dir.join("fake-java");
-    let script = format!(
-        r#"#!/bin/sh
-jar=""
-prev=""
-for arg in "$@"; do
-  if [ "$prev" = "-jar" ]; then jar="$arg"; fi
-  prev="$arg"
-done
-if [ -z "$jar" ]; then
-  echo "Error: no -jar argument was passed" >&2
-  exit 1
-fi
-if [ ! -f "$jar" ]; then
-  echo "Error: Unable to access jarfile $jar" >&2
-  exit 1
-fi
-{body}
-"#
-    );
-
-    std::fs::write(&path, script).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    path
+/// The stand-in launcher, built by cargo alongside these tests.
+fn fake_java() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_guardian-fake-java"))
 }
 
-fn guardian_for(dir: &Path, java: PathBuf, policy: GuardianConfig) -> std::sync::Arc<Guardian> {
+/// A guardian wired to the fake launcher, told to behave as `instructions` say.
+fn guardian_with(
+    dir: &Path,
+    policy: GuardianConfig,
+    instructions: &[&str],
+) -> std::sync::Arc<Guardian> {
     let mut config = ServerConfig::paper(dir, "1.21.8");
     config.eula_accepted = true;
+    // Passed after `-jar`, exactly where a real server's arguments go.
+    config.server_args = instructions.iter().map(|s| s.to_string()).collect();
 
     // The fake launcher insists on a real jar, just as the real one does.
     std::fs::write(dir.join("server.jar"), b"not really a jar").unwrap();
 
     let guardian = Guardian::new(config, policy, dir);
     let environment = ServerEnvironment {
-        java,
+        java: fake_java(),
         java_major: 21,
         jar: dir.join("server.jar"),
         directory: dir.to_path_buf(),
@@ -90,19 +70,7 @@ async fn await_status(events: &mut Receiver<ServerEvent>, want: ServerStatus) {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_server_that_logs_done_becomes_online_and_stops_gracefully() {
     let tmp = tempfile::tempdir().unwrap();
-    let java = fake_java(
-        tmp.path(),
-        r#"
-echo 'Starting minecraft server version 1.21.8'
-echo '[11:05:24 INFO]: Done (1.234s)! For help, type "help"'
-while read -r line; do
-  if [ "$line" = "stop" ]; then echo 'Stopping server'; exit 0; fi
-  echo "handled: $line"
-done
-"#,
-    );
-
-    let guardian = guardian_for(tmp.path(), java, GuardianConfig::default());
+    let guardian = guardian_with(tmp.path(), GuardianConfig::default(), &["done", "serve"]);
     let mut events = guardian.subscribe();
 
     guardian.start().await.unwrap();
@@ -128,18 +96,7 @@ done
 #[tokio::test(flavor = "multi_thread")]
 async fn console_commands_reach_the_process_stdin() {
     let tmp = tempfile::tempdir().unwrap();
-    let java = fake_java(
-        tmp.path(),
-        r#"
-echo '[11:05:24 INFO]: Done (0.5s)! For help, type "help"'
-while read -r line; do
-  if [ "$line" = "stop" ]; then exit 0; fi
-  echo "echoed: $line"
-done
-"#,
-    );
-
-    let guardian = guardian_for(tmp.path(), java, GuardianConfig::default());
+    let guardian = guardian_with(tmp.path(), GuardianConfig::default(), &["done", "serve"]);
     let mut events = guardian.subscribe();
 
     guardian.start().await.unwrap();
@@ -174,8 +131,6 @@ done
 #[tokio::test(flavor = "multi_thread")]
 async fn an_unexpected_exit_crashes_and_restarts_up_to_the_retry_limit() {
     let tmp = tempfile::tempdir().unwrap();
-    let java = fake_java(tmp.path(), "echo 'boom' >&2\nexit 1");
-
     let policy = GuardianConfig {
         auto_restart: true,
         max_retries: 2,
@@ -183,7 +138,7 @@ async fn an_unexpected_exit_crashes_and_restarts_up_to_the_retry_limit() {
         ..GuardianConfig::default()
     };
 
-    let guardian = guardian_for(tmp.path(), java, policy);
+    let guardian = guardian_with(tmp.path(), policy, &["err:boom", "exit:1"]);
     let mut events = guardian.subscribe();
 
     guardian.start().await.unwrap();
@@ -216,10 +171,8 @@ async fn an_unexpected_exit_crashes_and_restarts_up_to_the_retry_limit() {
 #[tokio::test(flavor = "multi_thread")]
 async fn auto_restart_can_be_switched_off() {
     let tmp = tempfile::tempdir().unwrap();
-    let java = fake_java(tmp.path(), "exit 3");
-
     let policy = GuardianConfig { auto_restart: false, ..GuardianConfig::default() };
-    let guardian = guardian_for(tmp.path(), java, policy);
+    let guardian = guardian_with(tmp.path(), policy, &["exit:3"]);
     let mut events = guardian.subscribe();
 
     guardian.start().await.unwrap();
@@ -232,17 +185,7 @@ async fn auto_restart_can_be_switched_off() {
 #[tokio::test(flavor = "multi_thread")]
 async fn starting_twice_is_rejected_rather_than_spawning_two_jvms() {
     let tmp = tempfile::tempdir().unwrap();
-    let java = fake_java(
-        tmp.path(),
-        r#"
-echo '[11:05:24 INFO]: Done (0.5s)! For help, type "help"'
-while read -r line; do
-  if [ "$line" = "stop" ]; then exit 0; fi
-done
-"#,
-    );
-
-    let guardian = guardian_for(tmp.path(), java, GuardianConfig::default());
+    let guardian = guardian_with(tmp.path(), GuardianConfig::default(), &["done", "serve"]);
     let mut events = guardian.subscribe();
 
     guardian.start().await.unwrap();
@@ -259,8 +202,7 @@ done
 #[tokio::test(flavor = "multi_thread")]
 async fn stopping_an_offline_server_is_rejected() {
     let tmp = tempfile::tempdir().unwrap();
-    let java = fake_java(tmp.path(), "exit 0");
-    let guardian = guardian_for(tmp.path(), java, GuardianConfig::default());
+    let guardian = guardian_with(tmp.path(), GuardianConfig::default(), &["exit:0"]);
 
     let error = guardian.stop().await.unwrap_err();
     assert!(matches!(error, guardian::Error::InvalidTransition { .. }));
@@ -270,16 +212,8 @@ async fn stopping_an_offline_server_is_rejected() {
 async fn a_server_that_ignores_stop_is_killed_after_the_timeout() {
     let tmp = tempfile::tempdir().unwrap();
     // This one never exits on "stop", the way a deadlocked server would not.
-    let java = fake_java(
-        tmp.path(),
-        r#"
-echo '[11:05:24 INFO]: Done (0.5s)! For help, type "help"'
-while true; do sleep 1; done
-"#,
-    );
-
     let policy = GuardianConfig { stop_timeout_secs: 1, ..GuardianConfig::default() };
-    let guardian = guardian_for(tmp.path(), java, policy);
+    let guardian = guardian_with(tmp.path(), policy, &["done", "hang"]);
     let mut events = guardian.subscribe();
 
     guardian.start().await.unwrap();
@@ -316,26 +250,17 @@ async fn a_relative_jar_path_still_launches() {
 
     let relative_dir = tmp.path().strip_prefix(&cwd).unwrap().to_path_buf();
     assert!(relative_dir.is_relative() && !relative_dir.starts_with(".."));
-    let java = fake_java(
-        tmp.path(),
-        r#"
-echo '[11:05:24 INFO]: Done (0.4s)! For help, type "help"'
-while read -r line; do
-  if [ "$line" = "stop" ]; then exit 0; fi
-done
-"#,
-    );
-
     std::fs::write(tmp.path().join("server.jar"), b"not really a jar").unwrap();
     let relative_jar = relative_dir.join("server.jar");
 
     let mut config = ServerConfig::paper(tmp.path(), "1.21.8");
     config.eula_accepted = true;
+    config.server_args = vec!["done".into(), "serve".into()];
 
     let guardian = Guardian::new(config, GuardianConfig::default(), tmp.path());
     guardian
         .set_environment(ServerEnvironment {
-            java,
+            java: fake_java(),
             java_major: 21,
             jar: relative_jar,
             directory: tmp.path().to_path_buf(),
@@ -354,20 +279,8 @@ done
 #[tokio::test(flavor = "multi_thread")]
 async fn the_console_buffer_is_bounded() {
     let tmp = tempfile::tempdir().unwrap();
-    let java = fake_java(
-        tmp.path(),
-        r#"
-i=0
-while [ $i -lt 200 ]; do echo "line $i"; i=$((i+1)); done
-echo '[11:05:24 INFO]: Done (0.5s)! For help, type "help"'
-while read -r line; do
-  if [ "$line" = "stop" ]; then exit 0; fi
-done
-"#,
-    );
-
     let policy = GuardianConfig { console_buffer: 50, ..GuardianConfig::default() };
-    let guardian = guardian_for(tmp.path(), java, policy);
+    let guardian = guardian_with(tmp.path(), policy, &["spam:200", "done", "serve"]);
     let mut events = guardian.subscribe();
 
     guardian.start().await.unwrap();
