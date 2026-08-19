@@ -25,6 +25,7 @@ export function Files({ serverId }: { serverId: string }) {
   const [editing, setEditing] = useState<{ path: string; content: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+  const [sizes, setSizes] = useState<Record<string, number>>({});
   const filePicker = useRef<HTMLInputElement | null>(null);
 
   const fail = useCallback(
@@ -38,6 +39,22 @@ export function Files({ serverId }: { serverId: string }) {
       try {
         setEntries(await api.files(serverId, target));
         setPath(target);
+        setSizes({});
+
+        // Measured separately so the listing is not held up by a walk of
+        // world/ or libraries/. A stale reply is dropped rather than applied
+        // to whatever folder the operator has since moved to.
+        api
+          .directorySizes(serverId, target)
+          .then((measured) => {
+            setPath((current) => {
+              if (current === target) {
+                setSizes(Object.fromEntries(measured.map((d) => [d.path, d.bytes])));
+              }
+              return current;
+            });
+          })
+          .catch(() => {});
       } catch (e) {
         fail(e, t("errors.generic"));
       }
@@ -48,6 +65,13 @@ export function Files({ serverId }: { serverId: string }) {
   useEffect(() => {
     void load("");
   }, [load]);
+
+  /** A directory's measured size, or a placeholder while it is being walked. */
+  function sizeOf(entry: FileEntry) {
+    if (!entry.directory) return formatBytes(entry.size);
+    const bytes = sizes[entry.path];
+    return bytes === undefined ? "…" : formatBytes(bytes);
+  }
 
   /** Join a name onto the directory currently being browsed. */
   const under = (name: string) => (path ? `${path}/${name}` : name);
@@ -335,12 +359,12 @@ export function Files({ serverId }: { serverId: string }) {
                   </button>
                   {/* The size lives here on narrow screens, where its column is dropped. */}
                   <span class="ml-6 font-mono text-xs text-fg-muted sm:hidden">
-                    {entry.directory ? "" : formatBytes(entry.size)}
+                    {sizeOf(entry)}
                     {busy === entry.path && ` · ${t("common.extracting")}`}
                   </span>
                 </td>
                 <td class="hidden px-4 py-2.5 text-right font-mono text-xs text-fg-muted sm:table-cell">
-                  {entry.directory ? "—" : formatBytes(entry.size)}
+                  {sizeOf(entry)}
                 </td>
                 <td class="hidden whitespace-nowrap px-4 py-2.5 text-right text-xs text-fg-muted md:table-cell">
                   {entry.modified ? new Date(entry.modified * 1000).toLocaleString() : "—"}

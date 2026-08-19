@@ -104,6 +104,7 @@ handshake.
 | `WS`                | `/servers/{id}/ws`                     | Live console, both directions      |
 | `GET` `PUT` `DELETE`| `/servers/{id}/files`                  | List / write / delete              |
 | `GET`               | `/servers/{id}/files/read`             | Read a text file                   |
+| `GET`               | `/servers/{id}/files/sizes`            | Measure the subdirectories of a path |
 | `GET`               | `/servers/{id}/files/download`         | Stream any file out                |
 | `POST`              | `/servers/{id}/files/upload`           | Multipart upload into a directory  |
 | `POST`              | `/servers/{id}/files/extract`          | Unpack a `.zip`/`.jar`/`.tar.gz`   |
@@ -195,6 +196,34 @@ Icon-only controls carry a tooltip *and* an `aria-label`. The tooltip is a
 convenience for pointer users; the label is what makes the control usable on a
 touchscreen, where hover does not exist, and in a screen reader.
 
+## Platforms
+
+Linux, macOS and Windows. `cargo check --workspace --all-targets --target
+x86_64-pc-windows-gnu` is clean, and the platform-specific pieces are handled
+rather than assumed:
+
+* System statistics come from [`sysinfo`], which already abstracts Linux,
+  Windows, macOS and the BSDs. No second library is needed, and none of the
+  panel's own code reads `/proc` or shells out to `ps`, `du` or `df`.
+* Java discovery and installation are `java-path`'s problem, and it knows about
+  `java.exe` and platform-specific archive layouts.
+* Shutdown handles `SIGTERM` on Unix and falls back to Ctrl-C elsewhere.
+* File-manager paths reject Windows drive prefixes along with `..`, and API
+  responses always use forward slashes whatever the host uses.
+* Backup archives store forward-slash entry names, so an archive taken on
+  Windows restores on Linux and back.
+
+Two caveats worth knowing:
+
+* **The supervisor tests are `#![cfg(unix)]`.** They drive a shell script
+  standing in for the JVM, so on Windows they are skipped rather than failing —
+  which means process-lifecycle behaviour is *not* covered there. It builds, and
+  the logic is platform-independent, but that is an argument, not a test.
+* `build.sh` is a shell script. On Windows run the two steps it wraps:
+  `cd web && npm install && npm run build`, then `cargo build --release`.
+
+[`sysinfo`]: https://crates.io/crates/sysinfo
+
 ## Mobile
 
 Row actions live in a contextual menu rather than on hover, because a hover
@@ -222,7 +251,7 @@ compile error rather than a `{missing}` in the UI. To add a language, copy
 cargo test --workspace
 ```
 
-79 tests. The supervisor ones spawn real child processes against a shell script
+81 tests. The supervisor ones spawn real child processes against a shell script
 standing in for the JVM, so the status machine, stdio pumps, graceful stop, kill
 fallback and restart policy are exercised for real rather than mocked. Only the
 Java/jar provisioning is stubbed — downloading a JDK is not a unit test's job.

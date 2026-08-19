@@ -98,10 +98,14 @@ fn directory_size(root: &Path) -> u64 {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
 
         for entry in entries.flatten() {
-            // symlink_metadata, so a link into a huge tree elsewhere is counted
-            // as the link it is rather than the target it points at.
-            let Ok(meta) = entry.metadata() else { continue };
+            // symlink_metadata, not metadata: following links would count a tree
+            // reachable elsewhere twice, and a link back to an ancestor would
+            // send this walk round forever.
+            let Ok(meta) = std::fs::symlink_metadata(entry.path()) else { continue };
 
+            if meta.is_symlink() {
+                continue;
+            }
             if meta.is_dir() {
                 stack.push(entry.path());
             } else if meta.is_file() {
@@ -125,6 +129,32 @@ mod tests {
         std::fs::write(tmp.path().join("nested/b"), vec![0u8; 250]).unwrap();
 
         assert_eq!(directory_size(tmp.path()), 350);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_cycle_does_not_loop_forever() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a"), vec![0u8; 40]).unwrap();
+        std::fs::create_dir(tmp.path().join("nested")).unwrap();
+
+        // A link back to an ancestor. Following it would recurse without end.
+        std::os::unix::fs::symlink(tmp.path(), tmp.path().join("nested/loop")).unwrap();
+
+        assert_eq!(directory_size(tmp.path()), 40);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_tree_is_not_counted_twice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("big"), vec![0u8; 500]).unwrap();
+
+        std::os::unix::fs::symlink(&real, tmp.path().join("alias")).unwrap();
+
+        assert_eq!(directory_size(tmp.path()), 500);
     }
 
     #[test]

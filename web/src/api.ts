@@ -118,6 +118,11 @@ export const api = {
   files: (id: string, path = "") =>
     request<FileEntry[]>(`/servers/${id}/files?path=${encodeURIComponent(path)}`),
 
+  directorySizes: (id: string, path = "") =>
+    request<{ path: string; bytes: number }[]>(
+      `/servers/${id}/files/sizes?path=${encodeURIComponent(path)}`,
+    ),
+
   readFile: (id: string, path: string) =>
     request<{ path: string; content: string }>(
       `/servers/${id}/files/read?path=${encodeURIComponent(path)}`,

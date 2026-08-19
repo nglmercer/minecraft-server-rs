@@ -226,6 +226,48 @@ async fn mkdir(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+/// The measured size of one subdirectory.
+#[derive(Serialize)]
+pub struct DirectorySize {
+    path: String,
+    bytes: u64,
+}
+
+/// Measure every subdirectory of `?path=`.
+///
+/// Deliberately a second request rather than part of the listing: walking a
+/// `world/` or `libraries/` tree costs real I/O, and the file list should appear
+/// immediately rather than waiting on it. Results are cached, so revisiting a
+/// folder is free.
+async fn sizes(
+    State(state): State<Arc<AppState>>,
+    identity: Identity,
+    AxumPath(id): AxumPath<String>,
+    Query(query): Query<PathQuery>,
+) -> ApiResult<Json<Vec<DirectorySize>>> {
+    let root = root_for(&state, &identity, &id).await?;
+    let target = resolve(&root, &query.path)?;
+
+    let mut dir = tokio::fs::read_dir(&target)
+        .await
+        .map_err(|_| ApiError::NotFound(format!("directory {}", query.path)))?;
+
+    let mut out = Vec::new();
+    while let Ok(Some(item)) = dir.next_entry().await {
+        let Ok(meta) = item.metadata().await else { continue };
+        if !meta.is_dir() {
+            continue;
+        }
+        let path = item.path();
+        out.push(DirectorySize {
+            bytes: state.metrics.disk_usage(&path).await,
+            path: relative_of(&root, &path),
+        });
+    }
+
+    Ok(Json(out))
+}
+
 /// Stream any file out, whatever its type or size.
 async fn download(
     State(state): State<Arc<AppState>>,
@@ -497,6 +539,7 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/{id}/files", get(list).put(write).delete(delete))
         .route("/{id}/files/read", get(read))
+        .route("/{id}/files/sizes", get(sizes))
         .route("/{id}/files/download", get(download))
         .route("/{id}/files/upload", post(upload))
         .route("/{id}/files/extract", post(extract))
