@@ -121,16 +121,7 @@ async fn create(
         return Err(ApiError::BadRequest("name is required".into()));
     }
 
-    let taken = state
-        .store
-        .read()
-        .await
-        .servers
-        .iter()
-        .any(|s| s.config.port == body.port);
-    if taken {
-        return Err(ApiError::BadRequest(format!("port {} is already assigned", body.port)));
-    }
+    port_is_free(&state, body.port, None).await?;
 
     let id = Uuid::new_v4().to_string();
     let directory = state.server_dir(&id);
@@ -216,6 +207,9 @@ async fn update(
         record.config.memory = memory;
     }
     if let Some(port) = body.port {
+        // Create checked this; update has to as well, or two servers end up
+        // fighting over the same port and the second one dies at bind time.
+        port_is_free(&state, port, Some(&id)).await?;
         record.config.port = port;
     }
     if let Some(eula) = body.eula_accepted {
@@ -333,6 +327,22 @@ async fn logs(
 ) -> ApiResult<Json<Vec<guardian::ConsoleLine>>> {
     authorized(&state, &identity, &id).await?;
     Ok(Json(state.guardian(&id).await?.console().await))
+}
+
+/// Reject a port already assigned to a different server.
+async fn port_is_free(state: &AppState, port: u16, except: Option<&str>) -> ApiResult<()> {
+    let clash = state
+        .store
+        .read()
+        .await
+        .servers
+        .iter()
+        .any(|s| s.config.port == port && Some(s.id.as_str()) != except);
+
+    if clash {
+        return Err(ApiError::BadRequest(format!("port {port} is already assigned")));
+    }
+    Ok(())
 }
 
 fn now() -> String {

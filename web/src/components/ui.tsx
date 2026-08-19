@@ -1,24 +1,37 @@
 import type { ComponentChildren, JSX } from "preact";
+import { useT } from "../i18n";
 import type { Status } from "../types";
 
-/** Colour and label for each lifecycle state. */
-const STATUS_STYLE: Record<Status, { dot: string; text: string; label: string }> = {
-  offline: { dot: "bg-slate-500", text: "text-slate-400", label: "Offline" },
-  preparing: { dot: "bg-sky-400 animate-pulse", text: "text-sky-300", label: "Preparing" },
-  starting: { dot: "bg-amber-400 animate-pulse", text: "text-amber-300", label: "Starting" },
-  online: { dot: "bg-accent", text: "text-accent", label: "Online" },
-  stopping: { dot: "bg-amber-400 animate-pulse", text: "text-amber-300", label: "Stopping" },
-  crashed: { dot: "bg-red-500", text: "text-red-400", label: "Crashed" },
+/** Colour for each lifecycle state. The label comes from the dictionary. */
+const STATUS_STYLE: Record<Status, { dot: string; text: string }> = {
+  offline: { dot: "bg-slate-500", text: "text-slate-400" },
+  preparing: { dot: "bg-sky-400 animate-pulse", text: "text-sky-300" },
+  starting: { dot: "bg-amber-400 animate-pulse", text: "text-amber-300" },
+  online: { dot: "bg-accent", text: "text-accent" },
+  stopping: { dot: "bg-amber-400 animate-pulse", text: "text-amber-300" },
+  crashed: { dot: "bg-red-500", text: "text-red-400" },
 };
 
 export function StatusPill({ status }: { status: Status }) {
+  const t = useT();
   const style = STATUS_STYLE[status] ?? STATUS_STYLE.offline;
+
   return (
     <span class="inline-flex items-center gap-2 text-sm font-medium">
       <span class={`size-2 rounded-full ${style.dot}`} />
-      <span class={style.text}>{style.label}</span>
+      <span class={style.text}>{t(`status.${status}` as "status.offline")}</span>
     </span>
   );
+}
+
+/** A right-aligned row of actions, used in table rows and card headers. */
+export function Actions({ children }: { children: ComponentChildren }) {
+  return <div class="flex items-center justify-end gap-2">{children}</div>;
+}
+
+/** Placeholder for a list or table with nothing in it. */
+export function Empty({ children }: { children: ComponentChildren }) {
+  return <p class="px-4 py-8 text-center text-sm text-fg-muted">{children}</p>;
 }
 
 type ButtonProps = JSX.IntrinsicElements["button"] & {
@@ -107,7 +120,7 @@ export function Banner({ kind, children }: { kind: "error" | "info"; children: C
 
 /** `1h 04m` style duration, for uptimes. */
 export function formatUptime(seconds: number | null): string {
-  if (seconds === null) return "—";
+  if (seconds === null || seconds < 0) return "—";
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = seconds % 60;

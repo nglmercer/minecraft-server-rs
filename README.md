@@ -151,16 +151,31 @@ every result will actually load. Bukkit-family servers install to `plugins/`,
 Fabric and Forge to `mods/`, and vanilla is refused with a suggestion rather
 than a silent no-op.
 
+## Internationalisation
+
+The UI ships in English and Spanish, picked from a stored choice, then the
+browser's `Accept-Language`, then English. Switch it from the header.
+
+`web/src/i18n/en.ts` is the source of truth. Its keys are typed, so a
+translation that is missing a key — or carries one that no longer exists — is a
+compile error rather than a `{missing}` in the UI. To add a language, copy
+`es.ts`, translate the values, and add it to `LANGUAGES` in `i18n/index.tsx`.
+
 ## Testing
 
 ```sh
 cargo test --workspace
 ```
 
-51 tests. The supervisor ones spawn real child processes against a shell script
+60 tests. The supervisor ones spawn real child processes against a shell script
 standing in for the JVM, so the status machine, stdio pumps, graceful stop, kill
 fallback and restart policy are exercised for real rather than mocked. Only the
 Java/jar provisioning is stubbed — downloading a JDK is not a unit test's job.
+
+That fake JVM validates its `-jar` argument and fails with the real launcher's
+message, which matters more than it sounds: an earlier version ignored its
+arguments entirely, and a launch bug shipped straight past a green test suite.
+When a test double is more forgiving than the real thing, it stops testing.
 
 ## Status
 

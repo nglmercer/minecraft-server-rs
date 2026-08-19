@@ -37,7 +37,15 @@ impl AppState {
             .await
             .with_context(|| format!("creating {}", data_dir.display()))?;
 
+        // Absolute from here on. The JVM is spawned with its working directory
+        // set to the server folder, so a data dir like the default `./data`
+        // would make every path stored under it unusable at launch time.
+        let data_dir = tokio::fs::canonicalize(&data_dir)
+            .await
+            .with_context(|| format!("resolving {}", data_dir.display()))?;
+
         let store = Arc::new(Store::load(&data_dir).await?);
+        migrate_relative_directories(&store, &data_dir).await?;
 
         let mut guardians = HashMap::new();
         for record in store.read().await.servers {
@@ -90,4 +98,43 @@ impl AppState {
 
 fn spawn_guardian(record: &ServerRecord, data_dir: &Path) -> Arc<Guardian> {
     Guardian::new(record.config.clone(), record.policy.clone(), data_dir)
+}
+
+/// Rewrite server directories that were stored relative to the panel's cwd.
+///
+/// Earlier versions saved whatever `--data-dir` was given, so an install
+/// started with the default `./data` has unusable paths on disk. Rewriting them
+/// once at startup repairs those installs instead of leaving them permanently
+/// unable to launch.
+async fn migrate_relative_directories(store: &Store, data_dir: &Path) -> Result<()> {
+    let needs_migration = store
+        .read()
+        .await
+        .servers
+        .iter()
+        .any(|record| record.config.directory.is_relative());
+
+    if !needs_migration {
+        return Ok(());
+    }
+
+    let servers_root = data_dir.join("servers");
+    store
+        .update(|data| {
+            for record in data.servers.iter_mut() {
+                if record.config.directory.is_relative() {
+                    let repaired = servers_root.join(&record.id);
+                    tracing::info!(
+                        server = %record.id,
+                        from = %record.config.directory.display(),
+                        to = %repaired.display(),
+                        "rewriting relative server directory"
+                    );
+                    record.config.directory = repaired;
+                }
+            }
+        })
+        .await?;
+
+    Ok(())
 }

@@ -13,13 +13,35 @@ use std::time::Duration;
 use tokio::sync::broadcast::Receiver;
 
 /// Write an executable stand-in for `java` that behaves like a server.
+///
+/// It validates `-jar` the way the real launcher does, and fails with the same
+/// message. Ignoring the argument would make these tests blind to a whole class
+/// of launch bugs — which is exactly how a broken relative jar path shipped.
 fn fake_java(dir: &Path, body: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
     let path = dir.join("fake-java");
-    // The launcher arguments (-Xms, -jar, nogui) are deliberately ignored: the
-    // point is to exercise the supervisor, not to parse a JVM command line.
-    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    let script = format!(
+        r#"#!/bin/sh
+jar=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-jar" ]; then jar="$arg"; fi
+  prev="$arg"
+done
+if [ -z "$jar" ]; then
+  echo "Error: no -jar argument was passed" >&2
+  exit 1
+fi
+if [ ! -f "$jar" ]; then
+  echo "Error: Unable to access jarfile $jar" >&2
+  exit 1
+fi
+{body}
+"#
+    );
+
+    std::fs::write(&path, script).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path
 }
@@ -27,6 +49,9 @@ fn fake_java(dir: &Path, body: &str) -> PathBuf {
 fn guardian_for(dir: &Path, java: PathBuf, policy: GuardianConfig) -> std::sync::Arc<Guardian> {
     let mut config = ServerConfig::paper(dir, "1.21.8");
     config.eula_accepted = true;
+
+    // The fake launcher insists on a real jar, just as the real one does.
+    std::fs::write(dir.join("server.jar"), b"not really a jar").unwrap();
 
     let guardian = Guardian::new(config, policy, dir);
     let environment = ServerEnvironment {
@@ -273,6 +298,57 @@ while true; do sleep 1; done
         .await
         .iter()
         .any(|l| l.line.contains("killing process")));
+}
+
+/// The panel's default `--data-dir` is `./data`, which made every launch fail:
+/// the JVM is spawned with its working directory set to the server folder, so
+/// `./data/servers/<id>/server.jar` was looked for *inside* that folder and
+/// reported as "Unable to access jarfile".
+///
+/// Reproducing it needs the server directory to sit below the process's working
+/// directory, exactly as `./data/servers/<id>` sits below the panel's. A temp
+/// directory elsewhere on the filesystem would be reached through `../..`,
+/// which happens to resolve the same way from either base and hides the bug.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_relative_jar_path_still_launches() {
+    let cwd = std::env::current_dir().unwrap();
+    let tmp = tempfile::tempdir_in(&cwd).unwrap();
+
+    let relative_dir = tmp.path().strip_prefix(&cwd).unwrap().to_path_buf();
+    assert!(relative_dir.is_relative() && !relative_dir.starts_with(".."));
+    let java = fake_java(
+        tmp.path(),
+        r#"
+echo '[11:05:24 INFO]: Done (0.4s)! For help, type "help"'
+while read -r line; do
+  if [ "$line" = "stop" ]; then exit 0; fi
+done
+"#,
+    );
+
+    std::fs::write(tmp.path().join("server.jar"), b"not really a jar").unwrap();
+    let relative_jar = relative_dir.join("server.jar");
+
+    let mut config = ServerConfig::paper(tmp.path(), "1.21.8");
+    config.eula_accepted = true;
+
+    let guardian = Guardian::new(config, GuardianConfig::default(), tmp.path());
+    guardian
+        .set_environment(ServerEnvironment {
+            java,
+            java_major: 21,
+            jar: relative_jar,
+            directory: tmp.path().to_path_buf(),
+        })
+        .await;
+
+    let mut events = guardian.subscribe();
+    guardian.start().await.unwrap();
+
+    // Without absolutizing, this times out in Crashed instead of reaching Online.
+    await_status(&mut events, ServerStatus::Online).await;
+
+    guardian.stop().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -1,6 +1,8 @@
 import { useEffect, useState } from "preact/hooks";
 import { api } from "../api";
-import { Banner, Button, Card, Field, Input, Select, StatusPill, formatUptime } from "../components/ui";
+import { Actions, Button, Card, Field, Input, Select, StatusPill, formatUptime } from "../components/ui";
+import { useToast } from "../components/Toast";
+import { useT } from "../i18n";
 import type { Server, SystemStats, User } from "../types";
 
 export function Dashboard({
@@ -10,19 +12,20 @@ export function Dashboard({
   user: User;
   onOpen: (id: string) => void;
 }) {
+  const t = useT();
+  const toast = useToast();
+
   const [servers, setServers] = useState<Server[]>([]);
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [creating, setCreating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   async function refresh() {
     try {
       const [list, system] = await Promise.all([api.servers(), api.system()]);
       setServers(list);
       setStats(system);
-      setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "could not load servers");
+      toast.error(e instanceof Error ? e.message : t("errors.loadServers"));
     }
   }
 
@@ -38,7 +41,7 @@ export function Dashboard({
       await api.power(id, action);
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "action failed");
+      toast.error(e instanceof Error ? e.message : t("errors.actionFailed"));
     }
   }
 
@@ -46,30 +49,31 @@ export function Dashboard({
     <div class="mx-auto w-full max-w-6xl space-y-6 px-6 py-8">
       <header class="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 class="text-2xl font-semibold">Servers</h1>
+          <h1 class="text-2xl font-semibold">{t("dashboard.title")}</h1>
           <p class="text-sm text-fg-muted">
-            {servers.length} configured · {stats?.servers_online ?? 0} online
+            {t("dashboard.summary", {
+              count: servers.length,
+              online: stats?.servers_online ?? 0,
+            })}
           </p>
         </div>
         {user.admin && (
           <Button variant="primary" onClick={() => setCreating((v) => !v)}>
-            {creating ? "Cancel" : "New server"}
+            {creating ? t("common.cancel") : t("dashboard.newServer")}
           </Button>
         )}
       </header>
 
       {stats && (
         <div class="grid gap-4 sm:grid-cols-3">
-          <Stat label="Host CPU" value={`${stats.cpu_percent.toFixed(0)}%`} />
+          <Stat label={t("dashboard.hostCpu")} value={`${stats.cpu_percent.toFixed(0)}%`} />
           <Stat
-            label="Host memory"
+            label={t("dashboard.hostMemory")}
             value={`${(stats.memory_used_mb / 1024).toFixed(1)} / ${(stats.memory_total_mb / 1024).toFixed(1)} GiB`}
           />
-          <Stat label="Servers online" value={String(stats.servers_online)} />
+          <Stat label={t("dashboard.serversOnline")} value={String(stats.servers_online)} />
         </div>
       )}
-
-      {error && <Banner kind="error">{error}</Banner>}
 
       {creating && (
         <CreateServer
@@ -94,8 +98,9 @@ export function Dashboard({
                 {server.name}
               </button>
               <p class="text-xs text-fg-muted">
-                {server.core} {server.version} · port {server.port} · Java {server.java_major} ·{" "}
-                {server.memory.max_mb} MB · up {formatUptime(server.uptime_secs)}
+                {server.core} {server.version} · {t("createServer.port").toLowerCase()}{" "}
+                {server.port} · Java {server.java_major} · {server.memory.max_mb} MB ·{" "}
+                {t("dashboard.upFor", { duration: formatUptime(server.uptime_secs) })}
                 {server.metrics && (
                   <>
                     {" · "}
@@ -110,31 +115,31 @@ export function Dashboard({
 
             <div class="flex items-center gap-3">
               <StatusPill status={server.status} />
-              <div class="flex gap-2">
+              <Actions>
                 <Button
                   variant="primary"
                   disabled={server.status !== "offline" && server.status !== "crashed"}
                   onClick={() => power(server.id, "start")}
                 >
-                  Start
+                  {t("dashboard.start")}
                 </Button>
                 <Button
                   disabled={server.status === "offline" || server.status === "crashed"}
                   onClick={() => power(server.id, "restart")}
                 >
-                  Restart
+                  {t("dashboard.restart")}
                 </Button>
                 <Button
                   variant="danger"
                   disabled={server.status === "offline" || server.status === "crashed"}
                   onClick={() => power(server.id, "stop")}
                 >
-                  Stop
+                  {t("dashboard.stop")}
                 </Button>
                 <Button variant="ghost" onClick={() => onOpen(server.id)}>
-                  Manage
+                  {t("dashboard.manage")}
                 </Button>
-              </div>
+              </Actions>
             </div>
           </article>
         ))}
@@ -142,10 +147,8 @@ export function Dashboard({
         {servers.length === 0 && !creating && (
           <Card>
             <p class="text-center text-sm text-fg-muted">
-              No servers yet.{" "}
-              {user.admin
-                ? "Create one to get started — Java and the server jar are downloaded for you."
-                : "Ask an administrator to grant you access to one."}
+              {t("dashboard.empty")}{" "}
+              {user.admin ? t("dashboard.emptyAdmin") : t("dashboard.emptyUser")}
             </p>
           </Card>
         )}
@@ -164,6 +167,8 @@ function Stat({ label, value }: { label: string; value: string }) {
 }
 
 function CreateServer({ onCreated }: { onCreated: () => void }) {
+  const t = useT();
+  const toast = useToast();
   const [providers, setProviders] = useState<{ id: string; server: boolean }[]>([]);
   const [versions, setVersions] = useState<string[]>([]);
   const [form, setForm] = useState({
@@ -177,7 +182,6 @@ function CreateServer({ onCreated }: { onCreated: () => void }) {
     eula_accepted: false,
   });
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     api.providers().then(setProviders).catch(() => {});
@@ -191,13 +195,12 @@ function CreateServer({ onCreated }: { onCreated: () => void }) {
         setVersions(list);
         setForm((f) => ({ ...f, version: list[0] ?? "" }));
       })
-      .catch((e) => setError(e.message));
+      .catch((e) => toast.error(e.message));
   }, [form.core]);
 
   async function submit(event: Event) {
     event.preventDefault();
     setBusy(true);
-    setError(null);
     try {
       await api.createServer({
         name: form.name,
@@ -210,7 +213,7 @@ function CreateServer({ onCreated }: { onCreated: () => void }) {
       });
       onCreated();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "could not create the server");
+      toast.error(e instanceof Error ? e.message : t("errors.generic"));
     } finally {
       setBusy(false);
     }
@@ -221,9 +224,7 @@ function CreateServer({ onCreated }: { onCreated: () => void }) {
   return (
     <Card title="New server">
       <form onSubmit={submit} class="space-y-5">
-        {error && <Banner kind="error">{error}</Banner>}
-
-        <div class="grid gap-4 sm:grid-cols-2">
+          <div class="grid gap-4 sm:grid-cols-2">
           <Field label="Name">
             <Input
               value={form.name}
@@ -232,7 +233,7 @@ function CreateServer({ onCreated }: { onCreated: () => void }) {
             />
           </Field>
 
-          <Field label="Port">
+          <Field label={t("createServer.port")}>
             <Input
               type="number"
               value={form.port}
@@ -240,7 +241,7 @@ function CreateServer({ onCreated }: { onCreated: () => void }) {
             />
           </Field>
 
-          <Field label="Flavour">
+          <Field label={t("createServer.flavour")}>
             <Select
               value={form.core}
               onChange={(e) => set({ core: (e.target as HTMLSelectElement).value })}
@@ -248,13 +249,13 @@ function CreateServer({ onCreated }: { onCreated: () => void }) {
               {providers.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.id}
-                  {p.server ? "" : " (proxy)"}
+                  {p.server ? "" : ` (${t("createServer.proxy")})`}
                 </option>
               ))}
             </Select>
           </Field>
 
-          <Field label="Version" hint={versions.length === 0 ? "Loading…" : undefined}>
+          <Field label={t("createServer.version")} hint={versions.length === 0 ? t("common.loading") : undefined}>
             <Select
               value={form.version}
               onChange={(e) => set({ version: (e.target as HTMLSelectElement).value })}
@@ -267,28 +268,28 @@ function CreateServer({ onCreated }: { onCreated: () => void }) {
             </Select>
           </Field>
 
-          <Field label="Java version" hint="Downloaded automatically if missing.">
+          <Field label={t("createServer.javaVersion")} hint={t("createServer.javaHint")}>
             <Select
               value={String(form.java_major)}
               onChange={(e) => set({ java_major: Number((e.target as HTMLSelectElement).value) })}
             >
               {[8, 11, 16, 17, 21, 25].map((v) => (
                 <option key={v} value={v}>
-                  Java {v}
+                  {t("createServer.java", { version: v })}
                 </option>
               ))}
             </Select>
           </Field>
 
           <div class="grid grid-cols-2 gap-3">
-            <Field label="Min RAM (MB)">
+            <Field label={t("createServer.minRam")}>
               <Input
                 type="number"
                 value={form.min_mb}
                 onInput={(e) => set({ min_mb: Number((e.target as HTMLInputElement).value) })}
               />
             </Field>
-            <Field label="Max RAM (MB)">
+            <Field label={t("createServer.maxRam")}>
               <Input
                 type="number"
                 value={form.max_mb}
@@ -306,21 +307,21 @@ function CreateServer({ onCreated }: { onCreated: () => void }) {
             class="mt-0.5 size-4 rounded border-ink-600 bg-ink-900 accent-[var(--color-accent)]"
           />
           <span class="text-fg-muted">
-            I accept the{" "}
+            {t("createServer.eulaPrefix")}{" "}
             <a
               href="https://aka.ms/MinecraftEULA"
               target="_blank"
               rel="noreferrer"
               class="text-accent underline"
             >
-              Minecraft EULA
+              {t("createServer.eulaLink")}
             </a>
-            . The server will not start until this is accepted.
+            {t("createServer.eulaSuffix")}
           </span>
         </label>
 
         <Button type="submit" variant="primary" disabled={busy || !form.version}>
-          {busy ? "Creating…" : "Create server"}
+          {busy ? t("common.creating") : t("createServer.submit")}
         </Button>
       </form>
     </Card>

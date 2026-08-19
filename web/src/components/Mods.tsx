@@ -1,111 +1,134 @@
 import { useCallback, useEffect, useState } from "preact/hooks";
 import { api } from "../api";
-import { Banner, Button, Input, formatBytes } from "./ui";
+import { useT } from "../i18n";
+import { useDialogs } from "./Modal";
+import { useToast } from "./Toast";
+import { Actions, Banner, Button, Empty, Input, formatBytes } from "./ui";
 import type { Installed, Project, Server } from "../types";
 
-/** Servers that cannot load anything, so the tab explains itself instead. */
+/** Flavours that cannot load anything, so the tab explains itself instead. */
 const UNSUPPORTED = ["vanilla"];
 
+/** Flavours whose add-ons are mods rather than plugins. */
+const MODDED = ["fabric", "forge", "mohist", "arclight"];
+
 export function Mods({ server }: { server: Server }) {
+  const t = useT();
+  const dialogs = useDialogs();
+  const toast = useToast();
+
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Project[]>([]);
   const [installed, setInstalled] = useState<Installed[]>([]);
   const [searching, setSearching] = useState(false);
   const [installing, setInstalling] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
 
-  const kind = ["fabric", "forge", "mohist", "arclight"].includes(server.core)
-    ? "mods"
-    : "plugins";
+  const supported = !UNSUPPORTED.includes(server.core);
+  const kind = MODDED.includes(server.core) ? t("plugins.kindMods") : t("plugins.kindPlugins");
+
+  const fail = useCallback(
+    (error: unknown) =>
+      toast.error(error instanceof Error ? error.message : t("errors.actionFailed")),
+    [toast, t],
+  );
 
   const loadInstalled = useCallback(async () => {
     try {
       setInstalled(await api.installedMods(server.id));
     } catch {
-      // A server with no plugins directory yet is not an error worth showing.
+      // A server whose plugins directory does not exist yet is not an error.
       setInstalled([]);
     }
   }, [server.id]);
 
-  useEffect(() => {
-    if (UNSUPPORTED.includes(server.core)) return;
-    void loadInstalled();
-    void search();
-  }, [server.id, server.core]);
+  const search = useCallback(
+    async (term: string) => {
+      setSearching(true);
+      try {
+        setResults(await api.searchMods(server.id, term));
+      } catch (e) {
+        fail(e);
+      } finally {
+        setSearching(false);
+      }
+    },
+    [server.id, fail],
+  );
 
-  async function search(event?: Event) {
-    event?.preventDefault();
-    setSearching(true);
-    setError(null);
-    try {
-      setResults(await api.searchMods(server.id, query));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "search failed");
-    } finally {
-      setSearching(false);
-    }
-  }
+  useEffect(() => {
+    if (!supported) return;
+    void loadInstalled();
+    void search("");
+  }, [supported, loadInstalled, search]);
 
   async function install(project: Project) {
     setInstalling(project.project_id);
-    setError(null);
-    setNotice(null);
     try {
       const result = await api.installMod(server.id, project.project_id);
-      setNotice(
-        `Installed ${result.name} ${result.version} to ${result.path}. ` +
-          `Restart the server to load it.`,
+      toast.success(
+        t("plugins.installedOk", {
+          name: result.name,
+          version: result.version,
+          path: result.path,
+        }),
       );
       await loadInstalled();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "install failed");
+      fail(e);
     } finally {
       setInstalling(null);
     }
   }
 
   async function remove(item: Installed) {
-    if (!confirm(`Delete ${item.filename}?`)) return;
+    const confirmed = await dialogs.confirm({
+      title: t("plugins.deleteTitle", { name: item.filename }),
+      confirmLabel: t("common.delete"),
+      danger: true,
+    });
+    if (!confirmed) return;
+
     try {
       await api.deleteFile(server.id, item.path);
       await loadInstalled();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "could not delete");
+      fail(e);
     }
   }
 
-  if (UNSUPPORTED.includes(server.core)) {
+  if (!supported) {
     return (
       <div class="min-h-0 flex-1 overflow-y-auto">
-        <Banner kind="info">
-          A vanilla server cannot load plugins or mods. Switch this server to Paper (for
-          plugins) or Fabric (for mods) under Settings — the world carries over.
-        </Banner>
+        <Banner kind="info">{t("plugins.unsupported")}</Banner>
       </div>
     );
   }
 
-  const installedNames = new Set(installed.map((i) => i.filename.toLowerCase()));
-
   return (
     <div class="min-h-0 flex-1 space-y-4 overflow-y-auto pb-6">
-      {error && <Banner kind="error">{error}</Banner>}
-      {notice && <Banner kind="info">{notice}</Banner>}
-
-      <form onSubmit={search} class="flex gap-2">
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void search(query);
+        }}
+        class="flex gap-2"
+      >
         <Input
           value={query}
-          placeholder={`Search Modrinth for ${server.core} ${server.version} ${kind}…`}
+          placeholder={t("plugins.searchPlaceholder", {
+            core: server.core,
+            version: server.version,
+            kind,
+          })}
           onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
         />
         <Button type="submit" variant="primary" disabled={searching}>
-          {searching ? "Searching…" : "Search"}
+          {searching ? t("common.searching") : t("common.search")}
         </Button>
       </form>
 
       <p class="text-xs text-fg-muted">
-        Results are filtered to what actually loads on {server.core} {server.version}.
+        {t("plugins.scoped", { core: server.core, version: server.version })}
       </p>
 
       <div class="grid gap-3">
@@ -128,10 +151,10 @@ export function Mods({ server }: { server: Server }) {
             )}
 
             <div class="min-w-0 flex-1">
-              <div class="flex items-baseline gap-2">
+              <div class="flex flex-wrap items-baseline gap-2">
                 <h3 class="truncate font-semibold">{project.title}</h3>
                 <span class="shrink-0 text-xs text-fg-muted">
-                  {project.downloads.toLocaleString()} downloads
+                  {t("plugins.downloads", { count: project.downloads.toLocaleString() })}
                 </span>
               </div>
               <p class="mt-0.5 line-clamp-2 text-sm text-fg-muted">{project.description}</p>
@@ -143,48 +166,45 @@ export function Mods({ server }: { server: Server }) {
               disabled={installing === project.project_id}
               onClick={() => install(project)}
             >
-              {installing === project.project_id ? "Installing…" : "Install"}
+              {installing === project.project_id ? t("common.installing") : t("common.install")}
             </Button>
           </article>
         ))}
 
-        {results.length === 0 && !searching && (
-          <p class="py-6 text-center text-sm text-fg-muted">
-            No results. Try a different search.
-          </p>
-        )}
+        {results.length === 0 && !searching && <Empty>{t("plugins.noResults")}</Empty>}
       </div>
 
       <section class="space-y-2">
         <h3 class="text-sm font-semibold">
-          Installed <span class="text-fg-muted">({installed.length})</span>
+          {t("plugins.installed")} <span class="text-fg-muted">({installed.length})</span>
         </h3>
+
         <div class="overflow-hidden rounded-xl border border-ink-700 bg-ink-850">
           <table class="w-full text-sm">
             <tbody class="divide-y divide-ink-700">
               {installed.map((item) => (
                 <tr key={item.path} class="group hover:bg-ink-800">
-                  <td class="px-4 py-2.5 font-mono text-sm">
-                    {item.filename}
-                    {installedNames.has(item.filename.toLowerCase()) && ""}
-                  </td>
+                  <td class="px-4 py-2.5 font-mono text-sm">{item.filename}</td>
                   <td class="px-4 py-2.5 text-right font-mono text-xs text-fg-muted">
                     {formatBytes(item.size)}
                   </td>
-                  <td class="px-4 py-2.5 text-right">
-                    <button
-                      class="text-xs text-fg-muted opacity-0 transition hover:text-red-400 group-hover:opacity-100"
-                      onClick={() => remove(item)}
-                    >
-                      Delete
-                    </button>
+                  <td class="px-4 py-2.5">
+                    <Actions>
+                      <button
+                        class="text-xs text-fg-muted opacity-0 transition hover:text-red-400 group-hover:opacity-100 focus:opacity-100"
+                        onClick={() => remove(item)}
+                      >
+                        {t("common.delete")}
+                      </button>
+                    </Actions>
                   </td>
                 </tr>
               ))}
+
               {installed.length === 0 && (
                 <tr>
-                  <td colspan={3} class="px-4 py-6 text-center text-sm text-fg-muted">
-                    Nothing installed yet.
+                  <td colspan={3}>
+                    <Empty>{t("plugins.nothingInstalled")}</Empty>
                   </td>
                 </tr>
               )}

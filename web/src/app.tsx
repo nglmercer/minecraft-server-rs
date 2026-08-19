@@ -1,6 +1,7 @@
 import { useEffect, useState } from "preact/hooks";
 import { api, token } from "./api";
-import { Button } from "./components/ui";
+import { Button, Select } from "./components/ui";
+import { LANGUAGES, useI18n, type Language } from "./i18n";
 import { Dashboard } from "./pages/Dashboard";
 import { Login } from "./pages/Login";
 import { ServerDetail } from "./pages/ServerDetail";
@@ -42,7 +43,28 @@ function useRoute(): [Route, (route: Route) => void] {
   ];
 }
 
+/** Switches the active language and remembers the choice. */
+function LanguagePicker() {
+  const { language, setLanguage, t } = useI18n();
+
+  return (
+    <Select
+      value={language}
+      aria-label={t("nav.language")}
+      onChange={(e) => setLanguage((e.target as HTMLSelectElement).value as Language)}
+      class="!w-auto !py-1.5 !text-xs"
+    >
+      {Object.entries(LANGUAGES).map(([code, { label }]) => (
+        <option key={code} value={code}>
+          {label}
+        </option>
+      ))}
+    </Select>
+  );
+}
+
 export function App() {
+  const { t } = useI18n();
   const [user, setUser] = useState<User | null>(null);
   const [ready, setReady] = useState(false);
   const [route, navigate] = useRoute();
@@ -67,11 +89,18 @@ export function App() {
   }, []);
 
   if (!ready) {
-    return <div class="grid h-full place-items-center text-fg-muted">Loading…</div>;
+    return <div class="grid h-full place-items-center text-fg-muted">{t("common.loading")}</div>;
   }
 
   if (!user) {
-    return <Login onSignedIn={setUser} />;
+    return (
+      <div class="relative h-full">
+        <div class="absolute right-4 top-4">
+          <LanguagePicker />
+        </div>
+        <Login onSignedIn={setUser} />
+      </div>
+    );
   }
 
   return (
@@ -85,7 +114,7 @@ export function App() {
             <span class="grid size-7 place-items-center rounded-md bg-accent text-sm font-bold text-ink-950">
               M
             </span>
-            <span class="text-sm font-semibold">Minecraft Panel</span>
+            <span class="text-sm font-semibold">{t("nav.title")}</span>
           </button>
 
           {user.admin && (
@@ -95,7 +124,7 @@ export function App() {
               }`}
               onClick={() => navigate({ page: "users" })}
             >
-              Accounts
+              {t("nav.accounts")}
             </button>
           )}
         </div>
@@ -103,8 +132,9 @@ export function App() {
         <div class="flex items-center gap-3 text-sm">
           <span class="text-fg-muted">
             {user.username}
-            {user.admin && <span class="ml-1.5 text-xs text-accent">admin</span>}
+            {user.admin && <span class="ml-1.5 text-xs text-accent">{t("nav.admin")}</span>}
           </span>
+          <LanguagePicker />
           <Button
             variant="ghost"
             onClick={async () => {
@@ -113,7 +143,7 @@ export function App() {
               navigate({ page: "dashboard" });
             }}
           >
-            Sign out
+            {t("nav.signOut")}
           </Button>
         </div>
       </nav>

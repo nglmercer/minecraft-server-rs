@@ -179,7 +179,10 @@ impl Guardian {
     /// [`Guardian::set_config`] clears it again, because an environment derived
     /// from one config says nothing about another.
     pub async fn set_environment(&self, environment: ServerEnvironment) {
-        *self.environment.write().await = Some(environment);
+        // Absolutized here rather than trusted, because `start` spawns with the
+        // working directory set to the server folder: a relative path would be
+        // re-resolved against it and the launch would fail.
+        *self.environment.write().await = Some(environment.absolutize());
     }
 
     /// Provision the environment (Java, jar, directory) without starting anything.

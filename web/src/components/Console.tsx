@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { openConsole } from "../api";
+import { useT } from "../i18n";
 import type { ConsoleLine, ServerEvent, Status } from "../types";
 
 /** Keep the DOM bounded; the backend keeps the authoritative buffer. */
@@ -22,6 +23,7 @@ export function Console({
   serverId: string;
   onStatus: (status: Status) => void;
 }) {
+  const t = useT();
   const [lines, setLines] = useState<ConsoleLine[]>([]);
   const [connected, setConnected] = useState(false);
   const [draft, setDraft] = useState("");
@@ -70,7 +72,7 @@ export function Console({
               {
                 seq: -1,
                 stream: "system",
-                line: `— ${message.skipped} lines skipped (client fell behind) —`,
+                line: t("console.skipped", { count: message.skipped }),
               },
             ]);
             break;
@@ -133,10 +135,10 @@ export function Console({
   return (
     <div class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-ink-700 bg-ink-950">
       <div class="flex items-center justify-between border-b border-ink-700 px-4 py-2 text-xs text-fg-muted">
-        <span class="font-medium">Console</span>
+        <span class="font-medium">{t("console.title")}</span>
         <span class="inline-flex items-center gap-1.5">
           <span class={`size-1.5 rounded-full ${connected ? "bg-accent" : "bg-amber-400 animate-pulse"}`} />
-          {connected ? "live" : "reconnecting…"}
+          {connected ? t("console.live") : t("console.reconnecting")}
         </span>
       </div>
 
@@ -146,7 +148,7 @@ export function Console({
         class="min-h-0 flex-1 overflow-y-auto px-4 py-3 font-mono text-[13px] leading-relaxed"
       >
         {rendered.length === 0 ? (
-          <p class="text-fg-muted">No output yet. Start the server to see its log here.</p>
+          <p class="text-fg-muted">{t("console.empty")}</p>
         ) : (
           rendered
         )}
@@ -158,7 +160,7 @@ export function Console({
           value={draft}
           onInput={(e) => setDraft((e.target as HTMLInputElement).value)}
           onKeyDown={onKeyDown}
-          placeholder={connected ? "Type a command and press Enter" : "Not connected"}
+          placeholder={connected ? t("console.placeholder") : t("console.disconnected")}
           disabled={!connected}
           spellcheck={false}
           autocomplete="off"

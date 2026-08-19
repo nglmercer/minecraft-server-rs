@@ -1,57 +1,68 @@
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { api } from "../api";
-import { Banner, Button, Input, formatBytes } from "./ui";
+import { useT } from "../i18n";
+import { useDialogs } from "./Modal";
+import { useToast } from "./Toast";
+import { Actions, Button, Empty, formatBytes } from "./ui";
 import type { FileEntry } from "../types";
 
-/** Files an operator actually edits often enough to deserve a shortcut. */
+/** Files an operator edits often enough to deserve a shortcut. */
 const QUICK_EDIT = ["server.properties", "ops.json", "whitelist.json", "eula.txt"];
 
 /** Archives the panel can unpack in place. */
 const EXTRACTABLE = /\.(zip|jar|tar\.gz|tgz)$/i;
 
 export function Files({ serverId }: { serverId: string }) {
+  const t = useT();
+  const dialogs = useDialogs();
+  const toast = useToast();
+
   const [path, setPath] = useState("");
   const [entries, setEntries] = useState<FileEntry[]>([]);
-  const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ path: string; content: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const filePicker = useRef<HTMLInputElement | null>(null);
+
+  const fail = useCallback(
+    (error: unknown, fallback: string) =>
+      toast.error(error instanceof Error ? error.message : fallback),
+    [toast],
+  );
 
   const load = useCallback(
     async (target: string) => {
-      setError(null);
       try {
         setEntries(await api.files(serverId, target));
         setPath(target);
       } catch (e) {
-        setError(e instanceof Error ? e.message : "could not read directory");
+        fail(e, t("errors.generic"));
       }
     },
-    [serverId],
+    [serverId, fail, t],
   );
 
   useEffect(() => {
     void load("");
   }, [load]);
 
+  /** Join a name onto the directory currently being browsed. */
+  const under = (name: string) => (path ? `${path}/${name}` : name);
+
   async function open(entry: FileEntry) {
     if (entry.directory) return load(entry.path);
-    setError(null);
     try {
       setEditing(await api.readFile(serverId, entry.path));
     } catch (e) {
-      setError(e instanceof Error ? e.message : "could not read file");
+      fail(e, t("files.tooLarge"));
     }
   }
 
   async function openByName(name: string) {
-    setError(null);
     try {
       setEditing(await api.readFile(serverId, name));
     } catch (e) {
-      setError(e instanceof Error ? e.message : `could not open ${name}`);
+      fail(e, t("errors.generic"));
     }
   }
 
@@ -60,30 +71,64 @@ export function Files({ serverId }: { serverId: string }) {
     setSaving(true);
     try {
       await api.writeFile(serverId, editing.path, editing.content);
+      toast.success(t("common.save"));
       setEditing(null);
       await load(path);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "could not save");
+      fail(e, t("errors.generic"));
     } finally {
       setSaving(false);
     }
   }
 
   async function remove(entry: FileEntry) {
-    if (!confirm(`Delete ${entry.path}? This cannot be undone.`)) return;
+    const confirmed = await dialogs.confirm({
+      title: t("files.deleteTitle", { name: entry.name }),
+      body: t("files.deleteBody"),
+      confirmLabel: t("common.delete"),
+      danger: true,
+    });
+    if (!confirmed) return;
+
     try {
       await api.deleteFile(serverId, entry.path);
       await load(path);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "could not delete");
+      fail(e, t("errors.generic"));
     }
   }
 
   async function newFolder() {
-    const name = prompt("Folder name");
+    const name = await dialogs.prompt({
+      title: t("files.newFolderTitle"),
+      label: t("files.newFolderLabel"),
+      confirmLabel: t("common.create"),
+    });
     if (!name) return;
-    await api.mkdir(serverId, path ? `${path}/${name}` : name);
-    await load(path);
+
+    try {
+      await api.mkdir(serverId, under(name));
+      await load(path);
+    } catch (e) {
+      fail(e, t("errors.generic"));
+    }
+  }
+
+  async function newFile() {
+    const name = await dialogs.prompt({
+      title: t("files.newFile"),
+      label: t("common.name"),
+      placeholder: t("files.newFilePlaceholder"),
+      confirmLabel: t("common.create"),
+    });
+    if (!name) return;
+
+    try {
+      await api.writeFile(serverId, under(name), "");
+      await load(path);
+    } catch (e) {
+      fail(e, t("errors.generic"));
+    }
   }
 
   async function upload(event: Event) {
@@ -92,72 +137,67 @@ export function Files({ serverId }: { serverId: string }) {
     if (files.length === 0) return;
 
     setBusy("upload");
-    setError(null);
-    setNotice(null);
     try {
       await api.upload(serverId, path, files);
-      setNotice(`Uploaded ${files.length} file${files.length === 1 ? "" : "s"}.`);
+      toast.success(t("files.uploaded", { count: files.length }));
       await load(path);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "upload failed");
+      fail(e, t("errors.generic"));
     } finally {
       setBusy(null);
-      // Clear the picker so re-selecting the same file fires change again.
+      // Cleared so re-picking the same file fires change again.
       input.value = "";
     }
   }
 
   async function extract(entry: FileEntry) {
     setBusy(entry.path);
-    setError(null);
-    setNotice(null);
     try {
       const result = await api.extract(serverId, entry.path);
-      setNotice(`Extracted ${result.entries} entries from ${entry.name}.`);
+      toast.success(t("files.extracted", { count: result.entries, name: entry.name }));
       await load(path);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "extraction failed");
+      fail(e, t("errors.generic"));
     } finally {
       setBusy(null);
     }
   }
 
   async function rename(entry: FileEntry) {
-    const name = prompt(`Rename ${entry.name} to`, entry.name);
+    const name = await dialogs.prompt({
+      title: t("files.renameTitle", { name: entry.name }),
+      label: t("files.renameLabel"),
+      initial: entry.name,
+      confirmLabel: t("common.rename"),
+    });
     if (!name || name === entry.name) return;
 
     const parent = entry.path.includes("/")
       ? entry.path.slice(0, entry.path.lastIndexOf("/"))
       : "";
-    setBusy(entry.path);
+
     try {
       await api.rename(serverId, entry.path, parent ? `${parent}/${name}` : name);
       await load(path);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "rename failed");
-    } finally {
-      setBusy(null);
+      fail(e, t("errors.generic"));
     }
   }
-
-  const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
-  const crumbs = path ? path.split("/") : [];
 
   if (editing) {
     return (
       <div class="flex min-h-0 flex-1 flex-col gap-3">
         <div class="flex items-center justify-between gap-3">
           <p class="truncate font-mono text-sm text-fg-muted">{editing.path}</p>
-          <div class="flex gap-2">
+          <Actions>
             <Button variant="ghost" onClick={() => setEditing(null)}>
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button variant="primary" onClick={save} disabled={saving}>
-              {saving ? "Saving…" : "Save"}
+              {saving ? t("common.saving") : t("common.save")}
             </Button>
-          </div>
+          </Actions>
         </div>
-        {error && <Banner kind="error">{error}</Banner>}
         <textarea
           value={editing.content}
           onInput={(e) =>
@@ -170,17 +210,20 @@ export function Files({ serverId }: { serverId: string }) {
     );
   }
 
+  const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+  const crumbs = path ? path.split("/") : [];
+
   return (
     <div class="flex min-h-0 flex-1 flex-col gap-3">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <nav class="flex items-center gap-1 font-mono text-sm text-fg-muted">
-          <button class="hover:text-fg" onClick={() => load("")}>
+          <button class="rounded px-1 hover:text-fg" onClick={() => load("")}>
             /
           </button>
           {crumbs.map((crumb, index) => (
-            <span key={crumb + index} class="flex items-center gap-1">
+            <span key={`${crumb}-${index}`} class="flex items-center gap-1">
               <button
-                class="hover:text-fg"
+                class="rounded px-1 hover:text-fg"
                 onClick={() => load(crumbs.slice(0, index + 1).join("/"))}
               >
                 {crumb}
@@ -189,35 +232,45 @@ export function Files({ serverId }: { serverId: string }) {
             </span>
           ))}
         </nav>
-        <div class="flex gap-2">
-          {QUICK_EDIT.map((name) => (
-            <Button key={name} variant="ghost" class="!px-2 !py-1 !text-xs" onClick={() => openByName(name)}>
-              {name}
-            </Button>
-          ))}
-          <Button onClick={newFolder}>New folder</Button>
+
+        <Actions>
+          <Button onClick={newFile}>{t("files.newFile")}</Button>
+          <Button onClick={newFolder}>{t("files.newFolder")}</Button>
           <Button
             variant="primary"
             disabled={busy === "upload"}
             onClick={() => filePicker.current?.click()}
           >
-            {busy === "upload" ? "Uploading…" : "Upload"}
+            {busy === "upload" ? t("common.uploading") : t("common.upload")}
           </Button>
-          <input
-            ref={filePicker}
-            type="file"
-            multiple
-            class="hidden"
-            onChange={upload}
-          />
-        </div>
+          <input ref={filePicker} type="file" multiple class="hidden" onChange={upload} />
+        </Actions>
       </div>
 
-      {error && <Banner kind="error">{error}</Banner>}
-      {notice && <Banner kind="info">{notice}</Banner>}
+      {path === "" && (
+        <div class="flex flex-wrap gap-1.5">
+          {QUICK_EDIT.map((name) => (
+            <button
+              key={name}
+              onClick={() => openByName(name)}
+              class="rounded-lg border border-ink-700 px-2.5 py-1 font-mono text-xs text-fg-muted transition-colors hover:border-accent/50 hover:text-fg"
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div class="min-h-0 flex-1 overflow-y-auto rounded-xl border border-ink-700 bg-ink-850">
         <table class="w-full text-sm">
+          <thead class="sticky top-0 bg-ink-850 text-left text-xs uppercase tracking-wider text-fg-muted">
+            <tr class="border-b border-ink-700">
+              <th class="px-4 py-2.5 font-medium">{t("common.name")}</th>
+              <th class="px-4 py-2.5 text-right font-medium">{t("files.size")}</th>
+              <th class="px-4 py-2.5 text-right font-medium">{t("files.modified")}</th>
+              <th class="px-4 py-2.5" />
+            </tr>
+          </thead>
           <tbody class="divide-y divide-ink-700">
             {path && (
               <tr class="hover:bg-ink-800">
@@ -228,6 +281,7 @@ export function Files({ serverId }: { serverId: string }) {
                 </td>
               </tr>
             )}
+
             {entries.map((entry) => (
               <tr key={entry.path} class="group hover:bg-ink-800">
                 <td class="px-4 py-2.5">
@@ -242,20 +296,18 @@ export function Files({ serverId }: { serverId: string }) {
                 <td class="px-4 py-2.5 text-right font-mono text-xs text-fg-muted">
                   {entry.directory ? "—" : formatBytes(entry.size)}
                 </td>
-                <td class="px-4 py-2.5 text-right text-xs text-fg-muted">
-                  {entry.modified
-                    ? new Date(entry.modified * 1000).toLocaleString()
-                    : "—"}
+                <td class="whitespace-nowrap px-4 py-2.5 text-right text-xs text-fg-muted">
+                  {entry.modified ? new Date(entry.modified * 1000).toLocaleString() : "—"}
                 </td>
                 <td class="px-4 py-2.5">
-                  <div class="flex items-center justify-end gap-2 opacity-0 transition group-hover:opacity-100">
+                  <div class="flex items-center justify-end gap-2 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
                     {!entry.directory && EXTRACTABLE.test(entry.name) && (
                       <button
                         class="text-xs text-fg-muted hover:text-accent"
                         disabled={busy === entry.path}
                         onClick={() => extract(entry)}
                       >
-                        {busy === entry.path ? "Extracting…" : "Extract"}
+                        {busy === entry.path ? t("common.extracting") : t("common.extract")}
                       </button>
                     )}
                     {!entry.directory && (
@@ -263,69 +315,36 @@ export function Files({ serverId }: { serverId: string }) {
                         href={api.downloadUrl(serverId, entry.path)}
                         class="text-xs text-fg-muted hover:text-fg"
                       >
-                        Download
+                        {t("common.download")}
                       </a>
                     )}
                     <button
                       class="text-xs text-fg-muted hover:text-fg"
                       onClick={() => rename(entry)}
                     >
-                      Rename
+                      {t("common.rename")}
                     </button>
                     <button
                       class="text-xs text-fg-muted hover:text-red-400"
                       onClick={() => remove(entry)}
                     >
-                      Delete
+                      {t("common.delete")}
                     </button>
                   </div>
                 </td>
               </tr>
             ))}
+
             {entries.length === 0 && (
               <tr>
-                <td colspan={4} class="px-4 py-8 text-center text-fg-muted">
-                  This folder is empty. It fills in once the server has run once.
+                <td colspan={4}>
+                  <Empty>{t("files.empty")}</Empty>
                 </td>
               </tr>
             )}
           </tbody>
         </table>
       </div>
-
-      <NewFile serverId={serverId} path={path} onCreated={() => load(path)} />
     </div>
-  );
-}
-
-function NewFile({
-  serverId,
-  path,
-  onCreated,
-}: {
-  serverId: string;
-  path: string;
-  onCreated: () => void;
-}) {
-  const [name, setName] = useState("");
-
-  async function create(event: Event) {
-    event.preventDefault();
-    if (!name.trim()) return;
-    await api.writeFile(serverId, path ? `${path}/${name.trim()}` : name.trim(), "");
-    setName("");
-    onCreated();
-  }
-
-  return (
-    <form onSubmit={create} class="flex gap-2">
-      <Input
-        value={name}
-        placeholder="new-file.txt"
-        onInput={(e) => setName((e.target as HTMLInputElement).value)}
-        class="max-w-xs"
-      />
-      <Button type="submit">Create file</Button>
-    </form>
   );
 }

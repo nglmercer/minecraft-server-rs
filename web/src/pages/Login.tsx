@@ -1,9 +1,11 @@
 import { useState } from "preact/hooks";
 import { api } from "../api";
 import { Banner, Button, Field, Input } from "../components/ui";
+import { useT } from "../i18n";
 import type { User } from "../types";
 
 export function Login({ onSignedIn }: { onSignedIn: (user: User) => void }) {
+  const t = useT();
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -16,7 +18,7 @@ export function Login({ onSignedIn }: { onSignedIn: (user: User) => void }) {
     try {
       onSignedIn(await api.login(username, password));
     } catch (e) {
-      setError(e instanceof Error ? e.message : "login failed");
+      setError(e instanceof Error ? e.message : t("login.failed"));
     } finally {
       setBusy(false);
     }
@@ -33,14 +35,14 @@ export function Login({ onSignedIn }: { onSignedIn: (user: User) => void }) {
             <span class="grid size-8 place-items-center rounded-lg bg-accent text-ink-950 font-bold">
               M
             </span>
-            <h1 class="text-lg font-semibold">Minecraft Panel</h1>
+            <h1 class="text-lg font-semibold">{t("login.heading")}</h1>
           </div>
-          <p class="text-sm text-fg-muted">Sign in to manage your servers.</p>
+          <p class="text-sm text-fg-muted">{t("login.subtitle")}</p>
         </div>
 
         {error && <Banner kind="error">{error}</Banner>}
 
-        <Field label="Username">
+        <Field label={t("login.username")}>
           <Input
             value={username}
             autocomplete="username"
@@ -48,7 +50,7 @@ export function Login({ onSignedIn }: { onSignedIn: (user: User) => void }) {
           />
         </Field>
 
-        <Field label="Password">
+        <Field label={t("login.password")}>
           <Input
             type="password"
             value={password}
@@ -58,11 +60,11 @@ export function Login({ onSignedIn }: { onSignedIn: (user: User) => void }) {
         </Field>
 
         <Button type="submit" variant="primary" class="w-full" disabled={busy}>
-          {busy ? "Signing in…" : "Sign in"}
+          {busy ? t("login.signingIn") : t("login.signIn")}
         </Button>
 
         <p class="text-center text-xs text-fg-muted">
-          First run? The initial password was printed in the panel's console.
+          {t("login.firstRun")}
         </p>
       </form>
     </div>

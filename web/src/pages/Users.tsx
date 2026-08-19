@@ -1,13 +1,18 @@
 import { useEffect, useState } from "preact/hooks";
 import { api } from "../api";
-import { Banner, Button, Card, Field, Input } from "../components/ui";
+import { Actions, Button, Card, Field, Input } from "../components/ui";
+import { useDialogs } from "../components/Modal";
+import { useToast } from "../components/Toast";
+import { useT } from "../i18n";
 import type { PanelUser, Server } from "../types";
 
 export function Users({ currentUser }: { currentUser: string }) {
+  const t = useT();
+  const toast = useToast();
+  const dialogs = useDialogs();
+
   const [users, setUsers] = useState<PanelUser[]>([]);
   const [servers, setServers] = useState<Server[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
   async function refresh() {
@@ -15,9 +20,8 @@ export function Users({ currentUser }: { currentUser: string }) {
       const [list, allServers] = await Promise.all([api.users(), api.servers()]);
       setUsers(list);
       setServers(allServers);
-      setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "could not load accounts");
+      toast.error(e instanceof Error ? e.message : t("errors.loadAccounts"));
     }
   }
 
@@ -25,34 +29,56 @@ export function Users({ currentUser }: { currentUser: string }) {
     void refresh();
   }, []);
 
+  const fail = (error: unknown) =>
+    toast.error(error instanceof Error ? error.message : t("errors.actionFailed"));
+
   async function remove(user: PanelUser) {
-    if (!confirm(`Delete the account "${user.username}"?`)) return;
+    const confirmed = await dialogs.confirm({
+      title: t("users.deleteTitle", { name: user.username }),
+      body: t("users.deleteBody"),
+      confirmLabel: t("common.delete"),
+      danger: true,
+    });
+    if (!confirmed) return;
+
     try {
       await api.deleteUser(user.username);
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "could not delete");
+      fail(e);
     }
   }
 
   async function toggleAdmin(user: PanelUser) {
     try {
       await api.updateUser(user.username, { admin: !user.admin });
-      setNotice(`${user.username} is now ${user.admin ? "a regular user" : "an admin"}.`);
+      toast.success(
+        t("users.roleChanged", {
+          name: user.username,
+          role: user.admin ? t("users.roleUser") : t("users.roleAdmin"),
+        }),
+      );
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "could not update");
+      fail(e);
     }
   }
 
   async function resetPassword(user: PanelUser) {
-    const password = prompt(`New password for ${user.username} (at least 8 characters)`);
+    const password = await dialogs.prompt({
+      title: t("users.setPasswordTitle", { name: user.username }),
+      label: t("users.setPasswordLabel"),
+      hint: t("users.passwordHint"),
+      password: true,
+      confirmLabel: t("common.save"),
+    });
     if (!password) return;
+
     try {
       await api.updateUser(user.username, { password });
-      setNotice(`Password changed for ${user.username}. Their sessions were signed out.`);
+      toast.success(t("users.passwordChanged", { name: user.username }));
     } catch (e) {
-      setError(e instanceof Error ? e.message : "could not update");
+      fail(e);
     }
   }
 
@@ -64,7 +90,7 @@ export function Users({ currentUser }: { currentUser: string }) {
       await api.updateUser(user.username, { servers: next });
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "could not update access");
+      fail(e);
     }
   }
 
@@ -72,16 +98,13 @@ export function Users({ currentUser }: { currentUser: string }) {
     <div class="mx-auto w-full max-w-4xl space-y-6 px-6 py-8">
       <header class="flex items-end justify-between gap-4">
         <div>
-          <h1 class="text-2xl font-semibold">Accounts</h1>
-          <p class="text-sm text-fg-muted">{users.length} accounts</p>
+          <h1 class="text-2xl font-semibold">{t("users.title")}</h1>
+          <p class="text-sm text-fg-muted">{t("users.count", { count: users.length })}</p>
         </div>
         <Button variant="primary" onClick={() => setCreating((v) => !v)}>
-          {creating ? "Cancel" : "New account"}
+          {creating ? t("common.cancel") : t("users.newAccount")}
         </Button>
       </header>
-
-      {error && <Banner kind="error">{error}</Banner>}
-      {notice && <Banner kind="info">{notice}</Banner>}
 
       {creating && (
         <CreateUser
@@ -101,43 +124,43 @@ export function Users({ currentUser }: { currentUser: string }) {
                 <p class="font-semibold">
                   {user.username}
                   {user.username === currentUser && (
-                    <span class="ml-2 text-xs text-fg-muted">(you)</span>
+                    <span class="ml-2 text-xs text-fg-muted">{t("users.you")}</span>
                   )}
-                  {user.admin && <span class="ml-2 text-xs text-accent">admin</span>}
+                  {user.admin && (
+                    <span class="ml-2 text-xs text-accent">{t("nav.admin")}</span>
+                  )}
                 </p>
                 <p class="mt-0.5 text-xs text-fg-muted">
                   {user.admin
-                    ? "Full access to every server and account."
-                    : `${user.servers.length} server${user.servers.length === 1 ? "" : "s"} granted`}
+                    ? t("users.adminAll")
+                    : t("users.grantedCount", { count: user.servers.length })}
                 </p>
               </div>
 
-              <div class="flex gap-2">
+              <Actions>
                 <Button class="!px-2.5 !py-1.5 !text-xs" onClick={() => resetPassword(user)}>
-                  Set password
+                  {t("users.setPassword")}
                 </Button>
                 <Button class="!px-2.5 !py-1.5 !text-xs" onClick={() => toggleAdmin(user)}>
-                  {user.admin ? "Revoke admin" : "Make admin"}
+                  {user.admin ? t("users.revokeAdmin") : t("users.makeAdmin")}
                 </Button>
                 <Button
                   variant="ghost"
                   class="!px-2.5 !py-1.5 !text-xs"
                   disabled={user.username === currentUser}
                   title={
-                    user.username === currentUser
-                      ? "You cannot delete your own account"
-                      : undefined
+                    user.username === currentUser ? t("users.cannotDeleteSelf") : undefined
                   }
                   onClick={() => remove(user)}
                 >
-                  Delete
+                  {t("common.delete")}
                 </Button>
-              </div>
+              </Actions>
             </div>
 
             {!user.admin && servers.length > 0 && (
               <div class="mt-4 space-y-2 border-t border-ink-700 pt-4">
-                <p class="text-xs uppercase tracking-wider text-fg-muted">Server access</p>
+                <p class="text-xs uppercase tracking-wider text-fg-muted">{t("users.serverAccess")}</p>
                 <div class="flex flex-wrap gap-3">
                   {servers.map((server) => (
                     <label key={server.id} class="flex items-center gap-2 text-sm">
@@ -169,41 +192,40 @@ function CreateUser({
   servers: Server[];
   onCreated: () => void;
 }) {
+  const t = useT();
+  const toast = useToast();
+
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [admin, setAdmin] = useState(false);
   const [granted, setGranted] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   async function submit(event: Event) {
     event.preventDefault();
     setBusy(true);
-    setError(null);
     try {
       await api.createUser({ username, password, admin, servers: granted });
       onCreated();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "could not create the account");
+      toast.error(e instanceof Error ? e.message : t("errors.generic"));
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <Card title="New account">
+    <Card title={t("users.newAccount")}>
       <form onSubmit={submit} class="space-y-4">
-        {error && <Banner kind="error">{error}</Banner>}
-
         <div class="grid gap-4 sm:grid-cols-2">
-          <Field label="Username">
+          <Field label={t("users.username")}>
             <Input
               value={username}
               autocomplete="off"
               onInput={(e) => setUsername((e.target as HTMLInputElement).value)}
             />
           </Field>
-          <Field label="Password" hint="At least 8 characters.">
+          <Field label={t("users.password")} hint={t("users.passwordHint")}>
             <Input
               type="password"
               value={password}
@@ -220,12 +242,12 @@ function CreateUser({
             onChange={(e) => setAdmin((e.target as HTMLInputElement).checked)}
             class="size-4 rounded border-ink-600 bg-ink-900 accent-[var(--color-accent)]"
           />
-          Administrator — full access to every server and account
+          {t("users.adminLabel")}
         </label>
 
         {!admin && servers.length > 0 && (
           <div class="space-y-2">
-            <p class="text-xs uppercase tracking-wider text-fg-muted">Server access</p>
+            <p class="text-xs uppercase tracking-wider text-fg-muted">{t("users.serverAccess")}</p>
             <div class="flex flex-wrap gap-3">
               {servers.map((server) => (
                 <label key={server.id} class="flex items-center gap-2 text-sm">
@@ -249,7 +271,7 @@ function CreateUser({
         )}
 
         <Button type="submit" variant="primary" disabled={busy}>
-          {busy ? "Creating…" : "Create account"}
+          {busy ? t("common.creating") : t("users.createAccount")}
         </Button>
       </form>
     </Card>
