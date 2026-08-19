@@ -18,6 +18,7 @@ use tokio_util::io::ReaderStream;
 use crate::auth::Identity;
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
+use crate::tickets::Resource;
 
 /// Refuse to load anything larger than this into the editor.
 const MAX_EDIT_BYTES: u64 = 2 * 1024 * 1024;
@@ -268,15 +269,65 @@ async fn sizes(
     Ok(Json(out))
 }
 
-/// Stream any file out, whatever its type or size.
-async fn download(
+/// Issue a short-lived grant for one file, for the browser to redeem.
+async fn download_ticket(
     State(state): State<Arc<AppState>>,
     identity: Identity,
     AxumPath(id): AxumPath<String>,
     Query(query): Query<PathQuery>,
-) -> ApiResult<Response> {
+) -> ApiResult<Json<serde_json::Value>> {
+    // Access is decided here, while the caller is still authenticated.
     let root = root_for(&state, &identity, &id).await?;
     let target = resolve(&root, &query.path)?;
+
+    if !target.is_file() {
+        return Err(ApiError::NotFound(format!("file {}", query.path)));
+    }
+
+    let ticket = state.tickets.issue(Resource::File {
+        server: id,
+        path: query.path,
+    });
+
+    Ok(Json(serde_json::json!({ "ticket": ticket })))
+}
+
+/// `?ticket=` on the download route.
+#[derive(Deserialize)]
+pub struct TicketQuery {
+    ticket: String,
+}
+
+/// Stream a file out for a browser navigation, authorised by a ticket.
+///
+/// No session credential is involved, so nothing sensitive is written to
+/// browser history or to the request log.
+async fn download(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Query(query): Query<TicketQuery>,
+) -> ApiResult<Response> {
+    let granted = state
+        .tickets
+        .redeem(&query.ticket)
+        .ok_or(ApiError::Unauthorized)?;
+
+    let Resource::File { server, path } = granted else {
+        return Err(ApiError::Unauthorized);
+    };
+    // A ticket for one server must not open a file in another.
+    if server != id {
+        return Err(ApiError::Unauthorized);
+    }
+
+    let root = state
+        .store
+        .server(&id)
+        .await
+        .map(|record| record.config.directory)
+        .ok_or_else(|| ApiError::NotFound(format!("server {id}")))?;
+    let target = resolve(&root, &path)?;
+    let query = PathQuery { path };
 
     let meta = tokio::fs::metadata(&target)
         .await
@@ -541,6 +592,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/{id}/files/read", get(read))
         .route("/{id}/files/sizes", get(sizes))
         .route("/{id}/files/download", get(download))
+        .route("/{id}/files/ticket", post(download_ticket))
         .route("/{id}/files/upload", post(upload))
         .route("/{id}/files/extract", post(extract))
         .route("/{id}/files/rename", post(rename))

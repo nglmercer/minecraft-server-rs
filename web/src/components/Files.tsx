@@ -27,6 +27,9 @@ export function Files({ serverId }: { serverId: string }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [sizes, setSizes] = useState<Record<string, number>>({});
   const filePicker = useRef<HTMLInputElement | null>(null);
+  // Read by the size request to decide whether its reply is still wanted. A
+  // state updater must stay pure, so it cannot double as a way to read state.
+  const currentPath = useRef("");
 
   const fail = useCallback(
     (error: unknown, fallback: string) =>
@@ -39,6 +42,7 @@ export function Files({ serverId }: { serverId: string }) {
       try {
         setEntries(await api.files(serverId, target));
         setPath(target);
+        currentPath.current = target;
         setSizes({});
 
         // Measured separately so the listing is not held up by a walk of
@@ -47,12 +51,8 @@ export function Files({ serverId }: { serverId: string }) {
         api
           .directorySizes(serverId, target)
           .then((measured) => {
-            setPath((current) => {
-              if (current === target) {
-                setSizes(Object.fromEntries(measured.map((d) => [d.path, d.bytes])));
-              }
-              return current;
-            });
+            if (currentPath.current !== target) return;
+            setSizes(Object.fromEntries(measured.map((d) => [d.path, d.bytes])));
           })
           .catch(() => {});
       } catch (e) {
@@ -221,7 +221,12 @@ export function Files({ serverId }: { serverId: string }) {
       if (EXTRACTABLE.test(entry.name)) {
         items.push({ label: t("common.extract"), onSelect: () => extract(entry) });
       }
-      items.push({ label: t("common.download"), href: api.downloadUrl(serverId, entry.path) });
+      items.push({
+        label: t("common.download"),
+        onSelect: () => {
+          api.download(serverId, entry.path).catch((e) => fail(e, t("errors.generic")));
+        },
+      });
     }
 
     items.push({ label: t("common.rename"), onSelect: () => rename(entry) });

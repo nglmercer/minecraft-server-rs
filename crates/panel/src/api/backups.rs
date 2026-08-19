@@ -13,6 +13,7 @@ use tokio_util::io::ReaderStream;
 use crate::auth::Identity;
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
+use crate::tickets::Resource;
 
 /// Resolve a server the caller may act on.
 async fn authorized(state: &AppState, identity: &Identity, id: &str) -> ApiResult<std::path::PathBuf> {
@@ -95,12 +96,42 @@ async fn delete(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-async fn download(
+/// Issue a short-lived grant for one backup archive.
+async fn download_ticket(
     State(state): State<Arc<AppState>>,
     identity: Identity,
     Path((id, backup)): Path<(String, String)>,
-) -> ApiResult<Response> {
+) -> ApiResult<Json<serde_json::Value>> {
     authorized(&state, &identity, &id).await?;
+    guardian::backup::path_of(&state.backup_dir(&id), &backup)?;
+
+    let ticket = state.tickets.issue(Resource::Backup { server: id, backup });
+    Ok(Json(serde_json::json!({ "ticket": ticket })))
+}
+
+/// `?ticket=` on the download route.
+#[derive(Deserialize)]
+pub struct TicketQuery {
+    ticket: String,
+}
+
+/// Stream an archive out for a browser navigation, authorised by a ticket.
+async fn download(
+    State(state): State<Arc<AppState>>,
+    Path((id, backup)): Path<(String, String)>,
+    axum::extract::Query(query): axum::extract::Query<TicketQuery>,
+) -> ApiResult<Response> {
+    let granted = state
+        .tickets
+        .redeem(&query.ticket)
+        .ok_or(ApiError::Unauthorized)?;
+
+    let Resource::Backup { server, backup: granted_backup } = granted else {
+        return Err(ApiError::Unauthorized);
+    };
+    if server != id || granted_backup != backup {
+        return Err(ApiError::Unauthorized);
+    }
 
     let path = guardian::backup::path_of(&state.backup_dir(&id), &backup)?;
     let file = tokio::fs::File::open(&path)
@@ -131,4 +162,5 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/{id}/backups/{backup}", axum::routing::delete(delete))
         .route("/{id}/backups/{backup}/restore", post(restore))
         .route("/{id}/backups/{backup}/download", get(download))
+        .route("/{id}/backups/{backup}/ticket", post(download_ticket))
 }

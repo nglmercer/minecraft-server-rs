@@ -78,19 +78,30 @@ impl Store {
     ///
     /// The write goes to a temporary file and is renamed into place, so a crash
     /// mid-write cannot leave a truncated `panel.json` behind.
+    ///
+    /// The lock is deliberately held across the write rather than released once
+    /// the document has been serialised. Releasing it early lets two writers
+    /// serialise in one order and reach the filesystem in the other, so the disk
+    /// ends up holding a state that memory has already moved past — and with a
+    /// shared temporary name, one writer renames the file out from under the
+    /// other and that update fails outright.
     pub async fn update<T>(&self, f: impl FnOnce(&mut PanelData) -> T) -> Result<T> {
         let mut guard = self.data.write().await;
         let out = f(&mut guard);
         let json = serde_json::to_vec_pretty(&*guard)?;
-        drop(guard);
 
-        let tmp = self.path.with_extension("json.tmp");
+        // Unique per write, so an unrelated process writing beside us — or a
+        // leftover file from an earlier crash — cannot be mistaken for ours.
+        let tmp = self.path.with_extension(format!("json.{}.tmp", std::process::id()));
+
         tokio::fs::write(&tmp, &json)
             .await
             .with_context(|| format!("writing {}", tmp.display()))?;
         tokio::fs::rename(&tmp, &self.path)
             .await
             .with_context(|| format!("replacing {}", self.path.display()))?;
+
+        drop(guard);
         Ok(out)
     }
 
@@ -172,6 +183,41 @@ mod tests {
             .unwrap();
 
         assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn concurrent_updates_all_survive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(Store::load(tmp.path()).await.unwrap());
+
+        // Several requests mutating panel state at once is ordinary: two admins,
+        // or one admin and a background write. None of them may be lost, and the
+        // document must never be left unreadable.
+        let writers: Vec<_> = (0..25)
+            .map(|i| {
+                let store = store.clone();
+                tokio::spawn(async move {
+                    store
+                        .update(move |data| data.users.push(user(&format!("user{i}"), false)))
+                        .await
+                        .unwrap();
+                })
+            })
+            .collect();
+
+        for writer in writers {
+            writer.await.unwrap();
+        }
+
+        let reloaded = Store::load(tmp.path())
+            .await
+            .expect("panel.json must still be readable");
+
+        assert_eq!(
+            reloaded.read().await.users.len(),
+            25,
+            "an update was lost between memory and disk"
+        );
     }
 
     #[tokio::test]

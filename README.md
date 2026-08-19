@@ -105,7 +105,8 @@ handshake.
 | `GET` `PUT` `DELETE`| `/servers/{id}/files`                  | List / write / delete              |
 | `GET`               | `/servers/{id}/files/read`             | Read a text file                   |
 | `GET`               | `/servers/{id}/files/sizes`            | Measure the subdirectories of a path |
-| `GET`               | `/servers/{id}/files/download`         | Stream any file out                |
+| `POST`              | `/servers/{id}/files/ticket`           | Short-lived grant for one download  |
+| `GET`               | `/servers/{id}/files/download`         | Stream a file out, given a ticket   |
 | `POST`              | `/servers/{id}/files/upload`           | Multipart upload into a directory  |
 | `POST`              | `/servers/{id}/files/extract`          | Unpack a `.zip`/`.jar`/`.tar.gz`   |
 | `POST`              | `/servers/{id}/files/rename`           | Rename or move                     |
@@ -113,7 +114,8 @@ handshake.
 | `GET` `POST`        | `/servers/{id}/backups`                | List / take a backup               |
 | `DELETE`            | `/servers/{id}/backups/{backup}`       | Delete a backup                    |
 | `POST`              | `/servers/{id}/backups/{backup}/restore` | Restore (server must be stopped) |
-| `GET`               | `/servers/{id}/backups/{backup}/download` | Stream the archive out          |
+| `POST`              | `/servers/{id}/backups/{backup}/ticket` | Short-lived grant for one download |
+| `GET`               | `/servers/{id}/backups/{backup}/download` | Stream the archive, given a ticket |
 | `GET`               | `/servers/{id}/mods`                   | Installed plugins or mods          |
 | `GET`               | `/servers/{id}/mods/search`            | Search Modrinth, scoped to this server |
 | `POST`              | `/servers/{id}/mods/install`           | Install a Modrinth project         |
@@ -127,6 +129,15 @@ handshake.
 
 Deleting a server removes it from the panel and leaves its files on disk. That
 is deliberate: a world should not be destroyable by a misclick in a browser.
+
+### Downloads
+
+A download is a browser navigation, and a browser cannot attach an
+`Authorization` header to one. Rather than putting the session token in the
+query string — where it lands in browser history, proxy logs and the panel's own
+request log — the client asks for a *ticket* first. A ticket names one file or
+one backup, expires after a minute, and grants nothing else. `?token=` is
+accepted on the WebSocket route alone, where there is no alternative.
 
 ### Accounts and access
 
@@ -251,7 +262,7 @@ compile error rather than a `{missing}` in the UI. To add a language, copy
 cargo test --workspace
 ```
 
-81 tests. The supervisor ones spawn real child processes against a shell script
+87 tests. The supervisor ones spawn real child processes against a shell script
 standing in for the JVM, so the status machine, stdio pumps, graceful stop, kill
 fallback and restart policy are exercised for real rather than mocked. Only the
 Java/jar provisioning is stubbed — downloading a JDK is not a unit test's job.

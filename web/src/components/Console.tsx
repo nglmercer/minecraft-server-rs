@@ -8,6 +8,9 @@ import type { ConsoleLine, ServerEvent, Status } from "../types";
 /** Keep the DOM bounded; the backend keeps the authoritative buffer. */
 const MAX_LINES = 2000;
 
+/** Give up after this many failed reconnects rather than retrying forever. */
+const MAX_RECONNECTS = 8;
+
 /** Colour a line by what it obviously is, without parsing log formats strictly. */
 function lineClass(line: ConsoleLine): string {
   if (line.stream === "system") return "text-sky-400";
@@ -32,6 +35,7 @@ export function Console({
   const [history, setHistory] = useState<string[]>([]);
   const [historyAt, setHistoryAt] = useState(-1);
 
+  const [gaveUp, setGaveUp] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [atBottom, setAtBottom] = useState(true);
 
@@ -40,20 +44,33 @@ export function Console({
   const pinned = useRef(true);
 
   useEffect(() => {
+    setGaveUp(false);
     setLines([]);
     let closed = false;
     let retry: number | undefined;
+    let attempt = 0;
 
     const connect = () => {
       const ws = openConsole(serverId);
       socket.current = ws;
 
-      ws.onopen = () => setConnected(true);
+      ws.onopen = () => {
+        setConnected(true);
+        attempt = 0;
+      };
       ws.onclose = () => {
         setConnected(false);
-        // Reconnect unless the component is going away; the panel restarting
-        // should not require the operator to reload the page.
-        if (!closed) retry = window.setTimeout(connect, 2000);
+        if (closed) return;
+
+        // Backed off and bounded. A socket rejected because the session expired
+        // closes immediately every time, and retrying twice a second forever
+        // would hammer the panel from a tab nobody is even looking at.
+        attempt += 1;
+        if (attempt > MAX_RECONNECTS) {
+          setGaveUp(true);
+          return;
+        }
+        retry = window.setTimeout(connect, Math.min(1000 * 2 ** (attempt - 1), 30000));
       };
       ws.onmessage = (event) => {
         const message: ServerEvent = JSON.parse(event.data);
@@ -159,7 +176,7 @@ export function Console({
           {t("console.title")}
           <span
             class={`size-2.5 rounded-full ${
-              connected ? "bg-accent" : "animate-pulse bg-amber-400"
+              connected ? "bg-accent" : gaveUp ? "bg-red-500" : "animate-pulse bg-amber-400"
             }`}
             role="status"
             aria-label={connected ? t("console.live") : t("console.reconnecting")}

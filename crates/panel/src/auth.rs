@@ -82,10 +82,14 @@ impl Sessions {
     /// Issue a token for `identity`.
     pub async fn create(&self, identity: Identity) -> String {
         let token = generate_token();
-        self.inner
-            .write()
-            .await
-            .insert(token.clone(), Session { identity, last_seen: Instant::now() });
+        let mut sessions = self.inner.write().await;
+
+        // Swept on login rather than on a timer. Expired entries are otherwise
+        // only noticed when someone presents them, so a panel that runs for
+        // months accumulates sessions nobody will ever resolve again.
+        sessions.retain(|_, session| session.last_seen.elapsed() < SESSION_TTL);
+
+        sessions.insert(token.clone(), Session { identity, last_seen: Instant::now() });
         token
     }
 
@@ -112,8 +116,13 @@ impl Sessions {
     }
 }
 
-/// Pull the bearer token out of the `Authorization` header, or the `token`
-/// query parameter — WebSocket clients cannot set headers.
+/// Pull the bearer token out of the `Authorization` header.
+///
+/// A `?token=` fallback exists for the WebSocket handshake alone, because
+/// browsers cannot set headers on one. It is restricted to that route on
+/// purpose: a token in a query string is copied into browser history, into
+/// proxy logs, and into this panel's own request log, so it must not become the
+/// convenient way to authenticate anything else.
 fn extract_token(parts: &Parts) -> Option<String> {
     if let Some(value) = parts.headers.get(axum::http::header::AUTHORIZATION) {
         if let Ok(text) = value.to_str() {
@@ -122,6 +131,11 @@ fn extract_token(parts: &Parts) -> Option<String> {
             }
         }
     }
+
+    if !parts.uri.path().ends_with("/ws") {
+        return None;
+    }
+
     let query = parts.uri.query()?;
     query.split('&').find_map(|pair| {
         let (key, value) = pair.split_once('=')?;
@@ -279,6 +293,29 @@ mod tests {
 
         let with_others = parts_for("/api/servers/x/ws?foo=1&token=abc123&bar=2", None);
         assert_eq!(extract_token(&with_others).as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn no_other_route_accepts_a_token_in_the_query_string() {
+        // Otherwise every download link would carry a session credential into
+        // browser history and the access log.
+        for uri in [
+            "/api/servers/x/files/download?path=a&token=abc123",
+            "/api/servers/x/backups/b/download?token=abc123",
+            "/api/servers?token=abc123",
+        ] {
+            assert!(
+                extract_token(&parts_for(uri, None)).is_none(),
+                "{uri} should not authenticate from the query string"
+            );
+        }
+
+        // The header still works on those routes.
+        let parts = parts_for(
+            "/api/servers/x/files/download?path=a",
+            Some("Bearer abc123"),
+        );
+        assert_eq!(extract_token(&parts).as_deref(), Some("abc123"));
     }
 
     #[test]

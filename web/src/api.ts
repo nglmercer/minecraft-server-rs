@@ -62,6 +62,16 @@ async function request<T>(
 
 const json = (body: unknown) => JSON.stringify(body);
 
+/** Navigate to `url` in a way the browser treats as a download. */
+function startDownload(url: string) {
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.rel = "noreferrer";
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+}
+
 export const api = {
   async login(username: string, password: string): Promise<User> {
     const result = await request<{ token: string; user: User }>("/auth/login", {
@@ -146,10 +156,20 @@ export const api = {
       body: json({ path }),
     }),
 
-  downloadUrl(id: string, path: string): string {
-    // The browser follows this itself, so the token rides in the query string.
-    const auth = encodeURIComponent(token() ?? "");
-    return `/api/servers/${id}/files/download?path=${encodeURIComponent(path)}&token=${auth}`;
+  /**
+   * Start a file download.
+   *
+   * A ticket is fetched first and the browser navigates to that. The session
+   * token never enters a URL, so it stays out of history and access logs.
+   */
+  async download(id: string, path: string): Promise<void> {
+    const { ticket } = await request<{ ticket: string }>(
+      `/servers/${id}/files/ticket?path=${encodeURIComponent(path)}`,
+      { method: "POST" },
+    );
+    startDownload(
+      `/api/servers/${id}/files/download?ticket=${encodeURIComponent(ticket)}`,
+    );
   },
 
   async upload(id: string, path: string, files: File[]): Promise<void> {
@@ -164,6 +184,14 @@ export const api = {
       `/api/servers/${id}/files/upload?path=${encodeURIComponent(path)}`,
       { method: "POST", body, headers },
     );
+
+    // Upload cannot go through `request` because the body is FormData, so the
+    // expired-session handling has to be repeated rather than inherited.
+    if (response.status === 401) {
+      setToken(null);
+      window.dispatchEvent(new CustomEvent("mcpanel:logout"));
+      throw new ApiError("session expired", 401);
+    }
     if (!response.ok) {
       const detail = await response.json().catch(() => ({}));
       throw new ApiError(detail.error ?? response.statusText, response.status);
@@ -193,9 +221,14 @@ export const api = {
   deleteBackup: (id: string, backup: string) =>
     request<{ ok: boolean }>(`/servers/${id}/backups/${backup}`, { method: "DELETE" }),
 
-  backupUrl(id: string, backup: string): string {
-    const auth = encodeURIComponent(token() ?? "");
-    return `/api/servers/${id}/backups/${backup}/download?token=${auth}`;
+  async downloadBackup(id: string, backup: string): Promise<void> {
+    const { ticket } = await request<{ ticket: string }>(
+      `/servers/${id}/backups/${backup}/ticket`,
+      { method: "POST" },
+    );
+    startDownload(
+      `/api/servers/${id}/backups/${backup}/download?ticket=${encodeURIComponent(ticket)}`,
+    );
   },
 
   searchMods: (id: string, q: string) =>

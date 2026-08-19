@@ -11,6 +11,7 @@ use crate::auth::Sessions;
 use crate::metrics::Metrics;
 use crate::error::ApiError;
 use crate::store::{ServerRecord, Store};
+use crate::tickets::Tickets;
 
 /// Everything the HTTP layer needs.
 pub struct AppState {
@@ -24,6 +25,8 @@ pub struct AppState {
     pub data_dir: PathBuf,
     /// Per-process CPU and memory sampling.
     pub metrics: Metrics,
+    /// Short-lived grants for browser-driven downloads.
+    pub tickets: Tickets,
 }
 
 impl AppState {
@@ -58,6 +61,7 @@ impl AppState {
             guardians: RwLock::new(guardians),
             data_dir,
             metrics: Metrics::default(),
+            tickets: Tickets::default(),
         }))
     }
 

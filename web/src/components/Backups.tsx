@@ -94,7 +94,12 @@ export function Backups({ serverId, status }: { serverId: string; status: Status
 
   function actionsFor(backup: Backup): MenuItem[] {
     return [
-      { label: t("common.download"), href: api.backupUrl(serverId, backup.id) },
+      {
+        label: t("common.download"),
+        onSelect: () => {
+          api.downloadBackup(serverId, backup.id).catch(fail);
+        },
+      },
       {
         label: t("common.restore"),
         onSelect: () => restore(backup),

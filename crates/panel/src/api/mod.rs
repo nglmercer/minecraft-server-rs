@@ -12,6 +12,7 @@ pub mod users;
 use axum::Router;
 use std::sync::Arc;
 
+use crate::error::ApiError;
 use crate::state::AppState;
 
 /// Everything under `/api`.
@@ -31,4 +32,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .nest("/servers", per_server)
         .merge(users::router())
         .merge(catalog::router())
+        // Without this, a mistyped API path falls through to the SPA and
+        // answers 200 with HTML, which reads as success to any client.
+        .fallback(|| async { ApiError::NotFound("endpoint".into()) })
 }

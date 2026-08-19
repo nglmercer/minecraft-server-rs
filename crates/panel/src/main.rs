@@ -16,6 +16,7 @@ mod error;
 mod metrics;
 mod state;
 mod store;
+mod tickets;
 mod web;
 
 use anyhow::{Context, Result};
