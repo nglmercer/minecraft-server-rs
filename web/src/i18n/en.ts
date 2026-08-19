@@ -178,6 +178,18 @@ export const en = {
   },
 
   settings: {
+    installSection: "Installed build",
+    installedAs: "{core} {version} · build {build} · Java {java}",
+    installedOn: "Installed {date}",
+    notInstalled: "Nothing installed yet. It is downloaded on the first start.",
+    needsInstall: "The next start will download a new artifact, because the configuration no longer matches what is installed.",
+    pinned: "Restarting never changes the build. Use Update to take a newer one deliberately.",
+    update: "Update / reinstall",
+    updating: "Downloading…",
+    updateTitle: "Update this server?",
+    updateBody: "The newest build for this version is downloaded and replaces the current jar. Worlds, configuration and plugins are untouched. Take a backup first if you want a way back.",
+    updated: "Reinstalled. Start the server to run it.",
+    mustStopToUpdate: "Stop the server before updating",
     serverSection: "Server",
     recoverySection: "Crash recovery",
     extraFlags: "Extra JVM flags",

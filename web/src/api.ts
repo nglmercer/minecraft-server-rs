@@ -112,6 +112,9 @@ export const api = {
 
   logs: (id: string) => request<ConsoleLine[]>(`/servers/${id}/logs`),
 
+  reinstall: (id: string) =>
+    request<{ ok: boolean }>(`/servers/${id}/reinstall`, { method: "POST" }),
+
   files: (id: string, path = "") =>
     request<FileEntry[]>(`/servers/${id}/files?path=${encodeURIComponent(path)}`),
 

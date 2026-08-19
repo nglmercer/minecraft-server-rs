@@ -32,11 +32,22 @@ pub struct ServerView {
     live: guardian::Snapshot,
     /// CPU and memory of this server's JVM, when one is running.
     metrics: Option<crate::metrics::ProcessMetrics>,
+    /// What is actually installed on disk, which may lag the config.
+    installed: Option<guardian::Installation>,
+    /// Whether starting would download a new artifact first.
+    needs_install: bool,
 }
 
 async fn view(state: &AppState, record: &ServerRecord) -> ApiResult<ServerView> {
-    let live = state.guardian(&record.id).await?.snapshot().await;
+    let guardian = state.guardian(&record.id).await?;
+    let live = guardian.snapshot().await;
     let metrics = live.pid.and_then(|pid| state.metrics.of(pid));
+
+    let installed = guardian.installation().await;
+    let needs_install = installed
+        .as_ref()
+        .map(|i| !i.satisfies(&record.config))
+        .unwrap_or(true);
     Ok(ServerView {
         id: record.id.clone(),
         name: record.name.clone(),
@@ -52,6 +63,8 @@ async fn view(state: &AppState, record: &ServerRecord) -> ApiResult<ServerView> 
         created_at: record.created_at.clone(),
         live,
         metrics,
+        installed,
+        needs_install,
     })
 }
 
@@ -320,6 +333,21 @@ async fn command(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+/// Force a re-resolve and download, replacing the installed artifact.
+async fn reinstall(
+    State(state): State<Arc<AppState>>,
+    identity: Identity,
+    Path(id): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    authorized(&state, &identity, &id).await?;
+
+    let guardian = state.guardian(&id).await?;
+    let installed = guardian.reinstall().await?;
+
+    tracing::info!(server = %id, jar = %installed.jar.display(), "reinstalled");
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 async fn logs(
     State(state): State<Arc<AppState>>,
     identity: Identity,
@@ -363,5 +391,6 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/{id}", get(get_one).patch(update).delete(delete))
         .route("/{id}/power", post(power))
         .route("/{id}/command", post(command))
+        .route("/{id}/reinstall", post(reinstall))
         .route("/{id}/logs", get(logs))
 }

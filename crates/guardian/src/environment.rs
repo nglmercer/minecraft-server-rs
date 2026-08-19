@@ -6,6 +6,7 @@
 
 use crate::config::ServerConfig;
 use crate::error::{Error, Result};
+use crate::install::Installation;
 use java_path::{JavaInstallation, JavaInstaller, SelectExt};
 use minecraft_core::MinecraftClient;
 use std::path::{Path, PathBuf};
@@ -88,11 +89,11 @@ pub async fn resolve_java(
         .map_err(|e| Error::JavaUnavailable(major, e.to_string()))
 }
 
-/// Download the server jar for `config`, reusing it when it is already present.
+/// Download the server jar for `config`, returning it and the build it resolved to.
 pub async fn resolve_jar(
     config: &ServerConfig,
     mut on_progress: impl FnMut(String, Option<f32>) + Send + 'static,
-) -> Result<PathBuf> {
+) -> Result<(PathBuf, String)> {
     let client = MinecraftClient::builder().build()?;
 
     let build = match &config.build {
@@ -101,13 +102,16 @@ pub async fn resolve_jar(
     };
 
     let jar = config.directory.join("server.jar");
-    on_progress(format!("downloading {} {}", config.core, config.version), None);
+    on_progress(
+        format!("downloading {} {} build {}", config.core, config.version, build.build_id),
+        None,
+    );
 
     // `verify` makes the download checksum-checked; `force` is off so an
     // already-correct jar is reused rather than re-fetched.
     client.download(&build).to(&jar).verify(true).await?;
 
-    Ok(jar)
+    Ok((jar, build.build_id.to_string()))
 }
 
 /// Create the server directory and write the files the server refuses to start without.
@@ -170,31 +174,86 @@ pub(crate) fn set_property(text: &str, key: &str, value: &str) -> String {
     out
 }
 
+/// Whether an existing installation may be reused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Provision {
+    /// Reuse what is installed when it already satisfies the config.
+    IfNeeded,
+    /// Re-resolve and download regardless — how a deliberate update is done.
+    Force,
+}
+
 /// The whole provisioning flow: directory, EULA, Java, jar.
+///
+/// With [`Provision::IfNeeded`] and a matching installation this touches no
+/// network at all, so a restart is as fast as launching the JVM.
 pub async fn prepare(
     config: &ServerConfig,
     data_dir: &Path,
+    mode: Provision,
     on_progress: impl Fn(String, Option<f32>) + Send + Sync + Clone + 'static,
 ) -> Result<ServerEnvironment> {
     if !config.eula_accepted {
         return Err(Error::EulaNotAccepted);
     }
 
+    // Cheap, and it keeps eula.txt and the port in step with the config.
     scaffold(config).await?;
+
+    let installed = Installation::load(&config.directory).await;
+
+    if mode == Provision::IfNeeded {
+        if let Some(installation) = &installed {
+            match installation.mismatch(config) {
+                None => {
+                    return Ok(ServerEnvironment {
+                        java: installation.java.clone(),
+                        java_major: installation.java_major,
+                        jar: installation.jar.clone(),
+                        directory: config.directory.clone(),
+                    }
+                    .absolutize())
+                }
+                // Say what changed, so a surprise download is never unexplained.
+                Some(reason) => on_progress(format!("reinstalling: {reason}"), None),
+            }
+        }
+    }
 
     let p = on_progress.clone();
     let java = resolve_java(config.java_major, data_dir, p).await?;
 
     let p = on_progress.clone();
-    let jar = resolve_jar(config, p).await?;
+    let (jar, build) = resolve_jar(config, p).await?;
 
-    Ok(ServerEnvironment {
+    let environment = ServerEnvironment {
         java: java.java.clone(),
         java_major: java.major(),
         jar,
         directory: config.directory.clone(),
     }
-    .absolutize())
+    .absolutize();
+
+    Installation {
+        core: config.core.clone(),
+        version: config.version.clone(),
+        // Recorded so an unpinned "latest" stops moving after the first install.
+        build,
+        java_major: environment.java_major,
+        java: environment.java.clone(),
+        jar: environment.jar.clone(),
+        installed_at: now_rfc3339(),
+    }
+    .save(&config.directory)
+    .await?;
+
+    Ok(environment)
+}
+
+fn now_rfc3339() -> String {
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
 }
 
 #[cfg(test)]

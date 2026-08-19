@@ -99,6 +99,7 @@ handshake.
 | `GET` `PATCH` `DELETE` | `/servers/{id}`                     | Inspect / reconfigure / remove     |
 | `POST`              | `/servers/{id}/power`                  | `start`, `stop`, `restart`, `kill` |
 | `POST`              | `/servers/{id}/command`                | Send a console command             |
+| `POST`              | `/servers/{id}/reinstall`              | Re-resolve and download the artifact |
 | `GET`               | `/servers/{id}/logs`                   | The retained console buffer        |
 | `WS`                | `/servers/{id}/ws`                     | Live console, both directions      |
 | `GET` `PUT` `DELETE`| `/servers/{id}/files`                  | List / write / delete              |
@@ -143,6 +144,27 @@ away mid-download cannot strand the server in `preparing`.
 Watch the WebSocket for `starting` and then `online`. A failure reports
 `offline` with the reason on the console, and `stop` or `kill` during
 `preparing` abandons the download and returns the server to `offline`.
+
+### What is installed, and when it changes
+
+Each server directory carries a `.mcpanel-install.json` record of what was
+actually provisioned: core, version, the resolved build, and the Java it was
+installed for. A start compares that record against the config and downloads
+only when they disagree — so an ordinary restart touches no network and takes
+milliseconds.
+
+Two consequences worth knowing:
+
+**An unpinned version does not drift.** Creating a server without naming a build
+resolves the newest one *once*, then records it. Restarting never silently moves
+a server onto a build published since. Taking a newer one is
+`POST /servers/{id}/reinstall`, or Update in Settings.
+
+**Only artifact-defining changes cost a download.** Core, version, pinned build
+and Java version force a reinstall, and the console says which of them changed.
+Name, port, memory, JVM flags and the supervision policy do not — they apply on
+the next start for free. Worlds, configuration and plugins are never touched by
+a reinstall; only the jar is replaced.
 
 ### Backups
 
@@ -189,7 +211,7 @@ compile error rather than a `{missing}` in the UI. To add a language, copy
 cargo test --workspace
 ```
 
-67 tests. The supervisor ones spawn real child processes against a shell script
+76 tests. The supervisor ones spawn real child processes against a shell script
 standing in for the JVM, so the status machine, stdio pumps, graceful stop, kill
 fallback and restart policy are exercised for real rather than mocked. Only the
 Java/jar provisioning is stubbed — downloading a JDK is not a unit test's job.

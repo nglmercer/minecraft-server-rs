@@ -39,6 +39,9 @@ export interface Server {
   uptime_secs: number | null;
   crashes: number;
   metrics: ProcessMetrics | null;
+  installed: Installation | null;
+  /** True when starting would download a new artifact first. */
+  needs_install: boolean;
 }
 
 export interface ProcessMetrics {
@@ -73,6 +76,16 @@ export interface PanelUser {
   username: string;
   admin: boolean;
   servers: string[];
+}
+
+export interface Installation {
+  core: string;
+  version: string;
+  build: string;
+  java_major: number;
+  java: string;
+  jar: string;
+  installed_at: string;
 }
 
 export interface ConsoleLine {

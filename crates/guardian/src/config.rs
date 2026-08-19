@@ -69,6 +69,20 @@ fn default_port() -> u16 {
 }
 
 impl ServerConfig {
+    /// The parts of the config that decide *which artifact* runs.
+    ///
+    /// Everything else — name, memory, port, flags, supervision policy — can
+    /// change without re-downloading anything, so changing them must not cost
+    /// the operator a reinstall.
+    pub fn artifact_key(&self) -> (&str, &str, Option<&str>, u32) {
+        (
+            &self.core,
+            &self.version,
+            self.build.as_deref(),
+            self.java_major,
+        )
+    }
+
     /// A sensible Paper server rooted at `directory`.
     pub fn paper(directory: impl Into<PathBuf>, version: impl Into<String>) -> Self {
         ServerConfig {
@@ -126,6 +140,25 @@ impl Default for GuardianConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_artifact_defining_fields_are_part_of_the_key() {
+        let base = ServerConfig::paper("/srv/mc", "1.21.8");
+
+        let mut cosmetic = base.clone();
+        cosmetic.port = 25599;
+        cosmetic.memory.max_mb = 8192;
+        cosmetic.jvm_args = vec!["-XX:+UseG1GC".into()];
+        assert_eq!(base.artifact_key(), cosmetic.artifact_key());
+
+        let mut core = base.clone();
+        core.core = "fabric".into();
+        assert_ne!(base.artifact_key(), core.artifact_key());
+
+        let mut java = base.clone();
+        java.java_major = 25;
+        assert_ne!(base.artifact_key(), java.artifact_key());
+    }
 
     #[test]
     fn heap_flags_are_emitted_in_jvm_order() {

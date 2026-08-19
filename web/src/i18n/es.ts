@@ -184,6 +184,18 @@ export const es: Dictionary = {
   },
 
   settings: {
+    installSection: "Build instalada",
+    installedAs: "{core} {version} · build {build} · Java {java}",
+    installedOn: "Instalado el {date}",
+    notInstalled: "Aún no hay nada instalado. Se descarga en el primer arranque.",
+    needsInstall: "El próximo arranque descargará un artefacto nuevo, porque la configuración ya no coincide con lo instalado.",
+    pinned: "Reiniciar nunca cambia la build. Usa Actualizar para tomar una nueva de forma deliberada.",
+    update: "Actualizar / reinstalar",
+    updating: "Descargando…",
+    updateTitle: "¿Actualizar este servidor?",
+    updateBody: "Se descarga la build más reciente de esta versión y reemplaza el jar actual. Los mundos, la configuración y los plugins no se tocan. Crea una copia antes si quieres poder volver atrás.",
+    updated: "Reinstalado. Inicia el servidor para ejecutarlo.",
+    mustStopToUpdate: "Detén el servidor antes de actualizar",
     serverSection: "Servidor",
     recoverySection: "Recuperación ante caídas",
     extraFlags: "Flags adicionales de la JVM",

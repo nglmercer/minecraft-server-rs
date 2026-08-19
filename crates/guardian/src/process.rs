@@ -8,7 +8,8 @@
 //! handlers, WebSocket sessions and the supervisor task without coordination.
 
 use crate::config::{GuardianConfig, ServerConfig};
-use crate::environment::{prepare, ServerEnvironment};
+use crate::environment::{prepare, Provision, ServerEnvironment};
+use crate::install::Installation;
 use crate::error::{Error, Result};
 use crate::events::{ConsoleLine, ServerEvent, ServerStatus, Stream};
 use std::collections::VecDeque;
@@ -120,10 +121,21 @@ impl Guardian {
     }
 
     /// Replace the configuration. Takes effect on the next start.
+    ///
+    /// The resolved environment is only discarded when the change actually
+    /// affects which artifact runs. Renaming a server, or giving it more RAM,
+    /// must not cost a re-resolve.
     pub async fn set_config(&self, config: ServerConfig) {
+        let artifact_changed = {
+            let current = self.config.read().await;
+            current.artifact_key() != config.artifact_key()
+        };
+
         *self.config.write().await = config;
-        // The environment was derived from the old config, so it is now stale.
-        *self.environment.write().await = None;
+
+        if artifact_changed {
+            *self.environment.write().await = None;
+        }
     }
 
     /// The current supervision policy.
@@ -202,12 +214,36 @@ impl Guardian {
         *self.environment.write().await = Some(environment.absolutize());
     }
 
+    /// What is installed in this server's directory, if anything.
+    pub async fn installation(&self) -> Option<Installation> {
+        Installation::load(&self.config.read().await.directory).await
+    }
+
+    /// Re-resolve and download the server artifact, replacing what is installed.
+    ///
+    /// This is how an operator deliberately takes a newer build: an ordinary
+    /// start never does it, so restarting cannot change what is running.
+    pub async fn reinstall(self: &Arc<Self>) -> Result<ServerEnvironment> {
+        if self.status().await.is_running() {
+            return Err(Error::InvalidTransition {
+                current: self.status().await.as_str(),
+                action: "reinstall",
+            });
+        }
+
+        *self.environment.write().await = None;
+        self.provision(Provision::Force).await
+    }
+
     /// Provision the environment (Java, jar, directory) without starting anything.
     ///
-    /// This always re-resolves. [`Guardian::start`] reuses a cached environment
-    /// instead, so a crash-restart loop does not re-run discovery and re-verify
-    /// the jar over the network on every attempt.
+    /// Reuses the recorded installation when it already satisfies the config,
+    /// so this is a local, offline operation in the common case.
     pub async fn prepare(self: &Arc<Self>) -> Result<ServerEnvironment> {
+        self.provision(Provision::IfNeeded).await
+    }
+
+    async fn provision(self: &Arc<Self>, mode: Provision) -> Result<ServerEnvironment> {
         let config = self.config().await;
         let this = Arc::downgrade(self);
 
@@ -225,7 +261,7 @@ impl Guardian {
             tokio::spawn(async move { guardian.say(line).await });
         };
 
-        let env = prepare(&config, &self.data_dir, progress).await?;
+        let env = prepare(&config, &self.data_dir, mode, progress).await?;
         *self.environment.write().await = Some(env.clone());
         Ok(env)
     }

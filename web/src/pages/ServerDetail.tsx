@@ -158,6 +158,78 @@ export function ServerDetail({
   );
 }
 
+/** What is installed on disk, and how to change it deliberately. */
+function Installed({ server, onChanged }: { server: Server; onChanged: () => void }) {
+  const t = useT();
+  const toast = useToast();
+  const dialogs = useDialogs();
+  const [busy, setBusy] = useState(false);
+
+  const running = server.status !== "offline" && server.status !== "crashed";
+
+  async function update() {
+    const confirmed = await dialogs.confirm({
+      title: t("settings.updateTitle"),
+      body: t("settings.updateBody"),
+      confirmLabel: t("settings.update"),
+    });
+    if (!confirmed) return;
+
+    setBusy(true);
+    try {
+      await api.reinstall(server.id);
+      toast.success(t("settings.updated"));
+      onChanged();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : t("errors.actionFailed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card title={t("settings.installSection")}>
+      {server.installed ? (
+        <div class="space-y-1">
+          <p class="font-mono text-sm">
+            {t("settings.installedAs", {
+              core: server.installed.core,
+              version: server.installed.version,
+              build: server.installed.build,
+              java: server.installed.java_major,
+            })}
+          </p>
+          <p class="text-xs text-fg-muted">
+            {t("settings.installedOn", {
+              date: new Date(server.installed.installed_at).toLocaleString(),
+            })}
+          </p>
+        </div>
+      ) : (
+        <p class="text-sm text-fg-muted">{t("settings.notInstalled")}</p>
+      )}
+
+      <p class="mt-3 text-xs leading-relaxed text-fg-muted">{t("settings.pinned")}</p>
+
+      {server.needs_install && server.installed && (
+        <div class="mt-3">
+          <Banner kind="info">{t("settings.needsInstall")}</Banner>
+        </div>
+      )}
+
+      <div class="mt-4">
+        <Button
+          disabled={busy || running}
+          title={running ? t("settings.mustStopToUpdate") : undefined}
+          onClick={update}
+        >
+          {busy ? t("settings.updating") : t("settings.update")}
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
 function Settings({
   server,
   user,
@@ -297,6 +369,8 @@ function Settings({
           {t("settings.eulaAccepted")}
         </label>
       </Card>
+
+      <Installed server={server} onChanged={onSaved} />
 
       <Card title={t("settings.recoverySection")}>
         <div class="grid gap-4 sm:grid-cols-3">
