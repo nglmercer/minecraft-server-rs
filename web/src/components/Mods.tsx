@@ -5,6 +5,7 @@ import { MenuButton, useMenu } from "./Menu";
 import { useDialogs } from "./Modal";
 import { useToast } from "./Toast";
 import { Banner, Button, Empty, Input, formatBytes } from "./ui";
+import * as Icon from "./icons";
 import type { Installed, Project, Server } from "../types";
 
 /** Flavours that cannot load anything, so the tab explains itself instead. */
@@ -124,7 +125,7 @@ export function Mods({ server }: { server: Server }) {
           })}
           onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
         />
-        <Button type="submit" variant="primary" disabled={searching}>
+        <Button type="submit" variant="primary" icon={<Icon.Search size={15} />} disabled={searching}>
           {searching ? t("common.searching") : t("common.search")}
         </Button>
       </form>
@@ -164,6 +165,7 @@ export function Mods({ server }: { server: Server }) {
 
             <Button
               variant="primary"
+              icon={<Icon.Download size={15} />}
               class="shrink-0"
               disabled={installing === project.project_id}
               onClick={() => install(project)}

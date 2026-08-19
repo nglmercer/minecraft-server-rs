@@ -184,6 +184,17 @@ every result will actually load. Bukkit-family servers install to `plugins/`,
 Fabric and Forge to `mods/`, and vanilla is refused with a suggestion rather
 than a silent no-op.
 
+## Interface
+
+Icons are inline SVG rather than an icon font or a sprite sheet: the frontend is
+embedded in the binary and served under a strict CSP, so anything fetched from
+elsewhere would not load. They inherit `currentColor`, so a control's icon and
+its text always match.
+
+Icon-only controls carry a tooltip *and* an `aria-label`. The tooltip is a
+convenience for pointer users; the label is what makes the control usable on a
+touchscreen, where hover does not exist, and in a screen reader.
+
 ## Mobile
 
 Row actions live in a contextual menu rather than on hover, because a hover
@@ -211,7 +222,7 @@ compile error rather than a `{missing}` in the UI. To add a language, copy
 cargo test --workspace
 ```
 
-76 tests. The supervisor ones spawn real child processes against a shell script
+79 tests. The supervisor ones spawn real child processes against a shell script
 standing in for the JVM, so the status machine, stdio pumps, graceful stop, kill
 fallback and restart policy are exercised for real rather than mocked. Only the
 Java/jar provisioning is stubbed — downloading a JDK is not a unit test's job.

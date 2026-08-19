@@ -36,6 +36,8 @@ pub struct ServerView {
     installed: Option<guardian::Installation>,
     /// Whether starting would download a new artifact first.
     needs_install: bool,
+    /// Bytes on disk in this server's directory.
+    disk_bytes: u64,
 }
 
 async fn view(state: &AppState, record: &ServerRecord) -> ApiResult<ServerView> {
@@ -43,6 +45,7 @@ async fn view(state: &AppState, record: &ServerRecord) -> ApiResult<ServerView> 
     let live = guardian.snapshot().await;
     let metrics = live.pid.and_then(|pid| state.metrics.of(pid));
 
+    let disk_bytes = state.metrics.disk_usage(&record.config.directory).await;
     let installed = guardian.installation().await;
     let needs_install = installed
         .as_ref()
@@ -65,6 +68,7 @@ async fn view(state: &AppState, record: &ServerRecord) -> ApiResult<ServerView> 
         metrics,
         installed,
         needs_install,
+        disk_bytes,
     })
 }
 

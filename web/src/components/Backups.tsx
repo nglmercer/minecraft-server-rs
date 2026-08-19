@@ -5,6 +5,7 @@ import { MenuButton, useMenu, type MenuItem } from "./Menu";
 import { useDialogs } from "./Modal";
 import { useToast } from "./Toast";
 import { Button, Empty, Input, formatBytes } from "./ui";
+import * as Icon from "./icons";
 import type { Backup, Status } from "../types";
 
 export function Backups({ serverId, status }: { serverId: string; status: Status }) {
@@ -114,7 +115,7 @@ export function Backups({ serverId, status }: { serverId: string; status: Status
             onInput={(e) => setNote((e.target as HTMLInputElement).value)}
           />
         </div>
-        <Button type="submit" variant="primary" disabled={busy === "create"}>
+        <Button type="submit" variant="primary" icon={<Icon.Archive size={15} />} disabled={busy === "create"}>
           {busy === "create" ? t("backups.taking") : t("backups.take")}
         </Button>
       </form>

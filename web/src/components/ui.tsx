@@ -1,5 +1,6 @@
 import type { ComponentChildren, JSX } from "preact";
 import { useT } from "../i18n";
+import { Tooltip } from "./Tooltip";
 import type { Status } from "../types";
 
 /** Colour for each lifecycle state. The label comes from the dictionary. */
@@ -36,20 +37,63 @@ export function Empty({ children }: { children: ComponentChildren }) {
 
 type ButtonProps = JSX.IntrinsicElements["button"] & {
   variant?: "primary" | "ghost" | "danger" | "subtle";
+  /** Rendered before the label. */
+  icon?: ComponentChildren;
 };
 
-export function Button({ variant = "subtle", class: extra, ...props }: ButtonProps) {
+export function Button({
+  variant = "subtle",
+  icon,
+  class: extra,
+  children,
+  ...props
+}: ButtonProps) {
   const base =
-    "inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium " +
+    "inline-flex items-center justify-center gap-2 rounded-full px-4 py-2 text-sm font-medium " +
     "transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none " +
     "focus-visible:ring-2 focus-visible:ring-accent/60";
   const variants = {
     primary: "bg-accent text-ink-950 hover:bg-accent/90",
-    danger: "bg-red-600/90 text-white hover:bg-red-600",
+    danger: "bg-red-500/15 text-red-300 hover:bg-red-500/25",
     ghost: "text-fg-muted hover:text-fg hover:bg-ink-700",
     subtle: "bg-ink-700 text-fg hover:bg-ink-600",
   };
-  return <button {...props} class={`${base} ${variants[variant]} ${extra ?? ""}`} />;
+  return (
+    <button {...props} class={`${base} ${variants[variant]} ${extra ?? ""}`}>
+      {icon}
+      {children}
+    </button>
+  );
+}
+
+/**
+ * A square, icon-only control.
+ *
+ * The label is required and becomes both the tooltip and the accessible name,
+ * so the control is never unlabelled on a touchscreen where hover does not exist.
+ */
+export function IconButton({
+  label,
+  icon,
+  side = "bottom",
+  class: extra,
+  ...props
+}: JSX.IntrinsicElements["button"] & {
+  label: string;
+  icon: ComponentChildren;
+  side?: "top" | "bottom";
+}) {
+  return (
+    <Tooltip label={label} side={side}>
+      <button
+        {...props}
+        aria-label={label}
+        class={`grid size-9 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-ink-700 hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 ${extra ?? ""}`}
+      >
+        {icon}
+      </button>
+    </Tooltip>
+  );
 }
 
 export function Card({
@@ -116,6 +160,66 @@ export function Banner({ kind, children }: { kind: "error" | "info"; children: C
       ? "border-red-500/40 bg-red-500/10 text-red-200"
       : "border-sky-500/40 bg-sky-500/10 text-sky-100";
   return <div class={`rounded-lg border px-4 py-3 text-sm ${styles}`}>{children}</div>;
+}
+
+/**
+ * A headline metric with an optional capacity bar.
+ *
+ * `max` is genuinely optional: disk usage has no configured ceiling here, and
+ * inventing one to make the card look symmetrical would be a lie.
+ */
+export function StatCard({
+  value,
+  max,
+  label,
+  icon,
+  fraction,
+  tone = "accent",
+}: {
+  value: string;
+  max?: string;
+  label: string;
+  icon: ComponentChildren;
+  /** 0..1. Omit to render the card without a bar. */
+  fraction?: number;
+  tone?: "accent" | "warn";
+}) {
+  const clamped = fraction === undefined ? undefined : Math.max(0, Math.min(1, fraction));
+  const bar = tone === "warn" ? "bg-amber-400" : "bg-accent";
+
+  return (
+    <section class="relative overflow-hidden rounded-2xl border border-ink-700 bg-ink-850 px-5 py-4">
+      <div class="flex items-start justify-between gap-3">
+        <p class="flex items-baseline gap-1.5">
+          <span class="text-2xl font-semibold tabular-nums tracking-tight sm:text-3xl">
+            {value}
+          </span>
+          {max && <span class="text-sm text-fg-muted">/ {max}</span>}
+        </p>
+        <span class="shrink-0 text-fg-muted">{icon}</span>
+      </div>
+
+      <p class="mt-1 text-sm text-fg-muted">{label}</p>
+
+      {clamped !== undefined && (
+        <>
+          {/* A soft wash above the bar, so a full card reads as full at a glance. */}
+          <div
+            class={`pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t ${
+              tone === "warn" ? "from-amber-400/20" : "from-accent/20"
+            } to-transparent transition-[height] duration-500`}
+            style={{ height: `${clamped * 100}%` }}
+          />
+          <div class="absolute inset-x-0 bottom-0 h-1 bg-ink-700">
+            <div
+              class={`h-full ${bar} transition-[width] duration-500`}
+              style={{ width: `${clamped * 100}%` }}
+            />
+          </div>
+        </>
+      )}
+    </section>
+  );
 }
 
 /** `1h 04m` style duration, for uptimes. */

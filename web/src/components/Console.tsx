@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { openConsole } from "../api";
 import { useT } from "../i18n";
+import * as Icon from "./icons";
+import { IconButton } from "./ui";
 import type { ConsoleLine, ServerEvent, Status } from "../types";
 
 /** Keep the DOM bounded; the backend keeps the authoritative buffer. */
@@ -29,6 +31,9 @@ export function Console({
   const [draft, setDraft] = useState("");
   const [history, setHistory] = useState<string[]>([]);
   const [historyAt, setHistoryAt] = useState(-1);
+
+  const [expanded, setExpanded] = useState(false);
+  const [atBottom, setAtBottom] = useState(true);
 
   const socket = useRef<WebSocket | null>(null);
   const scroller = useRef<HTMLDivElement | null>(null);
@@ -99,6 +104,15 @@ export function Console({
     const el = scroller.current;
     if (!el) return;
     pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    setAtBottom(pinned.current);
+  }
+
+  function scrollToBottom() {
+    const el = scroller.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    pinned.current = true;
+    setAtBottom(true);
   }
 
   function send(event: Event) {
@@ -133,29 +147,63 @@ export function Console({
   );
 
   return (
-    <div class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-ink-700 bg-ink-950">
-      <div class="flex items-center justify-between border-b border-ink-700 px-4 py-2 text-xs text-fg-muted">
-        <span class="font-medium">{t("console.title")}</span>
-        <span class="inline-flex items-center gap-1.5">
-          <span class={`size-1.5 rounded-full ${connected ? "bg-accent" : "bg-amber-400 animate-pulse"}`} />
-          {connected ? t("console.live") : t("console.reconnecting")}
-        </span>
+    <section
+      class={
+        expanded
+          ? "fixed inset-0 z-50 flex flex-col bg-ink-900 p-4"
+          : "flex min-h-0 flex-1 flex-col gap-3 rounded-2xl border border-ink-700 bg-ink-850 p-4 sm:p-5"
+      }
+    >
+      <div class="flex items-center justify-between">
+        <h2 class="flex items-center gap-2.5 text-lg font-semibold">
+          {t("console.title")}
+          <span
+            class={`size-2.5 rounded-full ${
+              connected ? "bg-accent" : "animate-pulse bg-amber-400"
+            }`}
+            role="status"
+            aria-label={connected ? t("console.live") : t("console.reconnecting")}
+          />
+        </h2>
+
+        <IconButton
+          label={expanded ? t("console.collapse") : t("console.expand")}
+          icon={expanded ? <Icon.Collapse size={17} /> : <Icon.Expand size={17} />}
+          onClick={() => setExpanded((v) => !v)}
+        />
       </div>
 
-      <div
-        ref={scroller}
-        onScroll={onScroll}
-        class="min-h-0 flex-1 overflow-y-auto px-4 py-3 font-mono text-[13px] leading-relaxed"
-      >
-        {rendered.length === 0 ? (
-          <p class="text-fg-muted">{t("console.empty")}</p>
-        ) : (
-          rendered
+      <div class="relative min-h-0 flex-1 overflow-hidden rounded-xl bg-ink-950">
+        <div
+          ref={scroller}
+          onScroll={onScroll}
+          class="h-full overflow-y-auto px-4 py-3 font-mono text-[13px] leading-relaxed"
+        >
+          {rendered.length === 0 ? <p class="text-fg-muted">{t("console.empty")}</p> : rendered}
+        </div>
+
+        {/* Only offered when it would do something, so it does not sit there
+            inviting a click that changes nothing. */}
+        {!atBottom && (
+          <div class="absolute bottom-3 right-3">
+            <IconButton
+              label={t("console.toBottom")}
+              side="top"
+              icon={<Icon.ArrowDown size={17} />}
+              onClick={scrollToBottom}
+              class="!bg-ink-800 !text-fg shadow-lg hover:!bg-ink-700"
+            />
+          </div>
         )}
       </div>
 
-      <form onSubmit={send} class="flex items-center gap-2 border-t border-ink-700 px-4 py-2.5">
-        <span class="font-mono text-sm text-accent">&gt;</span>
+      <form
+        onSubmit={send}
+        class="flex items-center gap-2.5 rounded-xl border border-ink-700 bg-ink-950 px-3.5 py-2.5 focus-within:border-accent/60"
+      >
+        <span class="shrink-0 text-fg-muted">
+          <Icon.Terminal size={16} />
+        </span>
         <input
           value={draft}
           onInput={(e) => setDraft((e.target as HTMLInputElement).value)}
@@ -167,6 +215,6 @@ export function Console({
           class="flex-1 bg-transparent font-mono text-sm text-fg placeholder:text-fg-muted/60 focus:outline-none disabled:opacity-50"
         />
       </form>
-    </div>
+    </section>
   );
 }

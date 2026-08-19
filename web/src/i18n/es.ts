@@ -26,6 +26,7 @@ export const es: Dictionary = {
     upload: "Subir",
     uploading: "Subiendo…",
     name: "Nombre",
+    more: "Más acciones",
     optional: "Opcional",
   },
 
@@ -102,6 +103,13 @@ export const es: Dictionary = {
     resources: "{cpu}% CPU · {memory} MB",
     preparing:
       "Descargando Java y el jar del servidor. En el primer arranque puede tardar unos minutos — el progreso aparece en la consola. Cancela para abandonarlo.",
+    metaVersion: "Versión de Minecraft",
+    metaCore: "Software del servidor y build",
+    metaPort: "Puerto",
+    metaUptime: "Tiempo activo",
+    cpuUsage: "Uso de CPU",
+    memoryUsage: "Uso de memoria",
+    storageUsage: "Uso de disco",
     eulaWarning:
       "No se ha aceptado el EULA de Minecraft para este servidor, así que no arrancará. Acéptalo en Ajustes.",
     tabs: {
@@ -120,6 +128,9 @@ export const es: Dictionary = {
     empty: "Sin salida todavía. Inicia el servidor para ver su registro aquí.",
     placeholder: "Escribe un comando y pulsa Enter",
     disconnected: "Sin conexión",
+    expand: "Expandir consola",
+    collapse: "Salir de pantalla completa",
+    toBottom: "Ir a lo más reciente",
     skipped: "— {count} líneas omitidas (el cliente se quedó atrás) —",
   },
 

@@ -5,6 +5,7 @@ import { MenuButton, useMenu, type MenuItem } from "./Menu";
 import { useDialogs } from "./Modal";
 import { useToast } from "./Toast";
 import { Actions, Button, Empty, formatBytes } from "./ui";
+import * as Icon from "./icons";
 import type { FileEntry } from "../types";
 
 /** Files an operator edits often enough to deserve a shortcut. */
@@ -258,10 +259,15 @@ export function Files({ serverId }: { serverId: string }) {
         </nav>
 
         <Actions>
-          <Button onClick={newFile}>{t("files.newFile")}</Button>
-          <Button onClick={newFolder}>{t("files.newFolder")}</Button>
+          <Button icon={<Icon.File size={15} />} onClick={newFile}>
+            {t("files.newFile")}
+          </Button>
+          <Button icon={<Icon.FolderOpen size={15} />} onClick={newFolder}>
+            {t("files.newFolder")}
+          </Button>
           <Button
             variant="primary"
+            icon={<Icon.Upload size={15} />}
             disabled={busy === "upload"}
             onClick={() => filePicker.current?.click()}
           >
@@ -322,7 +328,9 @@ export function Files({ serverId }: { serverId: string }) {
                     class="flex w-full items-center gap-2 text-left font-mono hover:text-accent"
                     onClick={() => open(entry)}
                   >
-                    <span class="shrink-0 text-fg-muted">{entry.directory ? "📁" : "📄"}</span>
+                    <span class="shrink-0 text-fg-muted">
+                      {entry.directory ? <Icon.Folder size={16} /> : <Icon.File size={16} />}
+                    </span>
                     <span class="truncate">{entry.name}</span>
                   </button>
                   {/* The size lives here on narrow screens, where its column is dropped. */}

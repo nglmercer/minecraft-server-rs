@@ -1,6 +1,7 @@
 import { useEffect, useState } from "preact/hooks";
 import { api, token } from "./api";
 import { Button, Select } from "./components/ui";
+import * as Icon from "./components/icons";
 import { LANGUAGES, useI18n, type Language } from "./i18n";
 import { Dashboard } from "./pages/Dashboard";
 import { Login } from "./pages/Login";
@@ -124,7 +125,10 @@ export function App() {
               }`}
               onClick={() => navigate({ page: "users" })}
             >
-              {t("nav.accounts")}
+              <span class="inline-flex items-center gap-1.5">
+                <Icon.Users size={15} />
+                {t("nav.accounts")}
+              </span>
             </button>
           )}
         </div>
@@ -137,6 +141,7 @@ export function App() {
           <LanguagePicker />
           <Button
             variant="ghost"
+            icon={<Icon.LogOut size={15} />}
             onClick={async () => {
               await api.logout();
               setUser(null);

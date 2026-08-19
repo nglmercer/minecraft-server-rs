@@ -42,6 +42,8 @@ export interface Server {
   installed: Installation | null;
   /** True when starting would download a new artifact first. */
   needs_install: boolean;
+  /** Bytes on disk in this server's directory. */
+  disk_bytes: number;
 }
 
 export interface ProcessMetrics {

@@ -24,6 +24,7 @@ export const en = {
     upload: "Upload",
     uploading: "Uploading…",
     name: "Name",
+    more: "More actions",
     optional: "Optional",
   },
 
@@ -98,6 +99,13 @@ export const en = {
     resources: "{cpu}% CPU · {memory} MB",
     preparing:
       "Downloading Java and the server jar. This can take a few minutes on a first start — progress appears in the console. Cancel to abandon it.",
+    metaVersion: "Minecraft version",
+    metaCore: "Server software and build",
+    metaPort: "Port",
+    metaUptime: "Uptime",
+    cpuUsage: "CPU usage",
+    memoryUsage: "Memory usage",
+    storageUsage: "Storage usage",
     eulaWarning:
       "The Minecraft EULA has not been accepted for this server, so it will refuse to start. Accept it under Settings.",
     tabs: {
@@ -116,6 +124,9 @@ export const en = {
     empty: "No output yet. Start the server to see its log here.",
     placeholder: "Type a command and press Enter",
     disconnected: "Not connected",
+    expand: "Expand console",
+    collapse: "Exit fullscreen",
+    toBottom: "Scroll to newest",
     skipped: "— {count} lines skipped (client fell behind) —",
   },
 

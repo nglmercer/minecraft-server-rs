@@ -1,6 +1,7 @@
 import { useEffect, useState } from "preact/hooks";
 import { api } from "../api";
-import { Button, Card, Field, Input, Select, StatusPill, formatUptime } from "../components/ui";
+import { Button, Card, Field, Input, Select, StatCard, StatusPill, formatUptime } from "../components/ui";
+import * as Icon from "../components/icons";
 import { useToast } from "../components/Toast";
 import { useT } from "../i18n";
 import type { Server, SystemStats, User } from "../types";
@@ -58,7 +59,11 @@ export function Dashboard({
           </p>
         </div>
         {user.admin && (
-          <Button variant="primary" onClick={() => setCreating((v) => !v)}>
+          <Button
+            variant="primary"
+            icon={creating ? undefined : <Icon.Plus size={15} />}
+            onClick={() => setCreating((v) => !v)}
+          >
             {creating ? t("common.cancel") : t("dashboard.newServer")}
           </Button>
         )}
@@ -66,12 +71,30 @@ export function Dashboard({
 
       {stats && (
         <div class="grid gap-4 sm:grid-cols-3">
-          <Stat label={t("dashboard.hostCpu")} value={`${stats.cpu_percent.toFixed(0)}%`} />
-          <Stat
-            label={t("dashboard.hostMemory")}
-            value={`${(stats.memory_used_mb / 1024).toFixed(1)} / ${(stats.memory_total_mb / 1024).toFixed(1)} GiB`}
+          <StatCard
+            icon={<Icon.Cpu size={20} />}
+            value={`${stats.cpu_percent.toFixed(0)}%`}
+            max="100%"
+            label={t("dashboard.hostCpu")}
+            fraction={stats.cpu_percent / 100}
           />
-          <Stat label={t("dashboard.serversOnline")} value={String(stats.servers_online)} />
+          <StatCard
+            icon={<Icon.Memory size={20} />}
+            value={`${(stats.memory_used_mb / 1024).toFixed(1)} GiB`}
+            max={`${(stats.memory_total_mb / 1024).toFixed(1)} GiB`}
+            label={t("dashboard.hostMemory")}
+            fraction={stats.memory_used_mb / Math.max(1, stats.memory_total_mb)}
+            tone={
+              stats.memory_used_mb / Math.max(1, stats.memory_total_mb) > 0.9 ? "warn" : "accent"
+            }
+          />
+          <StatCard
+            icon={<Icon.Package size={20} />}
+            value={String(stats.servers_online)}
+            max={String(servers.length)}
+            label={t("dashboard.serversOnline")}
+            fraction={stats.servers_online / Math.max(1, servers.length)}
+          />
         </div>
       )}
 
@@ -118,12 +141,14 @@ export function Dashboard({
               <div class="flex flex-wrap items-center gap-2">
                 <Button
                   variant="primary"
+                  icon={<Icon.Play size={13} />}
                   disabled={server.status !== "offline" && server.status !== "crashed"}
                   onClick={() => power(server.id, "start")}
                 >
                   {t("dashboard.start")}
                 </Button>
                 <Button
+                  icon={<Icon.Restart size={15} />}
                   disabled={server.status === "offline" || server.status === "crashed"}
                   onClick={() => power(server.id, "restart")}
                 >
@@ -131,6 +156,7 @@ export function Dashboard({
                 </Button>
                 <Button
                   variant="danger"
+                  icon={<Icon.Stop size={15} />}
                   disabled={server.status === "offline" || server.status === "crashed"}
                   onClick={() => power(server.id, "stop")}
                 >
@@ -153,15 +179,6 @@ export function Dashboard({
           </Card>
         )}
       </div>
-    </div>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div class="rounded-xl border border-ink-700 bg-ink-850 px-5 py-4">
-      <p class="text-xs uppercase tracking-wider text-fg-muted">{label}</p>
-      <p class="mt-1 text-xl font-semibold tabular-nums">{value}</p>
     </div>
   );
 }
