@@ -260,7 +260,7 @@ compile error rather than a `{missing}` in the UI. To add a language, copy
 ## Testing
 
 ```sh
-cargo test --workspace     # 87 backend tests
+cargo test --workspace     # 89 backend tests
 cd web && npm test         # 29 frontend tests
 ```
 

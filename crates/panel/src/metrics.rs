@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, MINIMUM_CPU_UPDATE_INTERVAL};
 
 /// How long a directory size is trusted before it is measured again.
 ///
@@ -16,6 +16,17 @@ use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 /// seconds; without this the panel would spend more effort measuring the server
 /// than running it.
 const DISK_TTL: Duration = Duration::from_secs(60);
+
+/// What the machine as a whole is doing.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct HostMetrics {
+    /// Busy percentage across all cores, 0..=100.
+    pub cpu_percent: f32,
+    /// Physical memory in use, in mebibytes.
+    pub memory_used_mb: u64,
+    /// Physical memory installed, in mebibytes.
+    pub memory_total_mb: u64,
+}
 
 /// What one JVM is currently costing.
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -29,14 +40,26 @@ pub struct ProcessMetrics {
 /// Samples processes, keeping enough history for CPU deltas to be meaningful.
 pub struct Metrics {
     // sysinfo computes CPU usage as a delta against the previous refresh, so
-    // the same System instance has to survive between calls.
+    // the same System instance has to survive between calls. Building a fresh
+    // one per request is the classic way to get a number that never moves.
     system: Mutex<System>,
     disk: Mutex<HashMap<PathBuf, (Instant, u64)>>,
+    /// Last host CPU reading, and when it was taken.
+    host_cpu: Mutex<(Instant, f32)>,
 }
 
 impl Default for Metrics {
     fn default() -> Self {
-        Metrics { system: Mutex::new(System::new()), disk: Mutex::new(HashMap::new()) }
+        let mut system = System::new();
+
+        // Establish the baseline the first real reading is measured against.
+        system.refresh_cpu_usage();
+
+        Metrics {
+            system: Mutex::new(system),
+            disk: Mutex::new(HashMap::new()),
+            host_cpu: Mutex::new((Instant::now(), 0.0)),
+        }
     }
 }
 
@@ -60,6 +83,37 @@ impl Metrics {
             cpu_percent: process.cpu_usage(),
             memory_mb: process.memory() / 1024 / 1024,
         })
+    }
+
+    /// Whole-machine CPU and memory.
+    ///
+    /// CPU is a delta against the previous sample, so two refreshes closer
+    /// together than sysinfo's minimum interval would report nonsense. Inside
+    /// that window the last real reading is repeated rather than recomputed.
+    pub fn host(&self) -> HostMetrics {
+        let mut system = match self.system.lock() {
+            Ok(system) => system,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+
+        system.refresh_memory();
+
+        let cpu_percent = match self.host_cpu.lock() {
+            Ok(mut last) => {
+                if last.0.elapsed() >= MINIMUM_CPU_UPDATE_INTERVAL {
+                    system.refresh_cpu_usage();
+                    *last = (Instant::now(), system.global_cpu_usage());
+                }
+                last.1
+            }
+            Err(_) => system.global_cpu_usage(),
+        };
+
+        HostMetrics {
+            cpu_percent,
+            memory_used_mb: system.used_memory() / 1024 / 1024,
+            memory_total_mb: system.total_memory() / 1024 / 1024,
+        }
     }
 
     /// Total size of everything under `dir`, cached for [`DISK_TTL`].
@@ -120,6 +174,59 @@ fn directory_size(root: &Path) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Occupy every core for `duration`.
+    fn saturate(duration: Duration) {
+        let threads: Vec<_> = (0..std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(2))
+            .map(|_| {
+                std::thread::spawn(move || {
+                    let deadline = Instant::now() + duration;
+                    let mut spin: u64 = 0;
+                    while Instant::now() < deadline {
+                        spin = spin.wrapping_add(1);
+                    }
+                    std::hint::black_box(spin);
+                })
+            })
+            .collect();
+
+        for thread in threads {
+            let _ = thread.join();
+        }
+    }
+
+    #[test]
+    fn host_cpu_responds_to_load() {
+        let metrics = Metrics::default();
+
+        // Establish a baseline, then read again after an idle gap.
+        metrics.host();
+        std::thread::sleep(MINIMUM_CPU_UPDATE_INTERVAL * 2);
+        let idle = metrics.host().cpu_percent;
+
+        saturate(MINIMUM_CPU_UPDATE_INTERVAL * 3);
+        let busy = metrics.host().cpu_percent;
+
+        // Asserting `busy > 0` would not catch anything: a freshly built System
+        // reports an average since boot, which is non-zero and never moves. What
+        // was broken is that the number did not *respond*, so that is the
+        // assertion — saturating every core has to show up.
+        assert!(
+            busy > idle + 10.0,
+            "idle {idle}% then saturated {busy}%: the reading is not tracking load"
+        );
+    }
+
+    #[test]
+    fn host_memory_is_reported_and_sane() {
+        let host = Metrics::default().host();
+
+        assert!(host.memory_total_mb > 0);
+        assert!(host.memory_used_mb > 0);
+        assert!(host.memory_used_mb <= host.memory_total_mb);
+    }
 
     #[test]
     fn a_directory_size_is_the_sum_of_its_files() {

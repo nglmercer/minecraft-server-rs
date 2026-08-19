@@ -112,9 +112,8 @@ async fn javas(_: Identity) -> Json<Vec<JavaView>> {
 /// Host resource usage, for the dashboard header.
 #[derive(Serialize)]
 pub struct SystemStats {
-    cpu_percent: f32,
-    memory_used_mb: u64,
-    memory_total_mb: u64,
+    #[serde(flatten)]
+    host: crate::metrics::HostMetrics,
     servers_online: usize,
 }
 
@@ -122,10 +121,6 @@ async fn system(
     State(state): State<Arc<AppState>>,
     identity: Identity,
 ) -> ApiResult<Json<SystemStats>> {
-    let mut sys = sysinfo::System::new();
-    sys.refresh_memory();
-    sys.refresh_cpu_usage();
-
     let mut online = 0;
     for record in state.store.read().await.servers {
         if !identity.may_access(&record.id) {
@@ -136,12 +131,9 @@ async fn system(
         }
     }
 
-    Ok(Json(SystemStats {
-        cpu_percent: sys.global_cpu_usage(),
-        memory_used_mb: sys.used_memory() / 1024 / 1024,
-        memory_total_mb: sys.total_memory() / 1024 / 1024,
-        servers_online: online,
-    }))
+    // Sampled from the long-lived Metrics, which keeps the previous CPU reading
+    // to measure against.
+    Ok(Json(SystemStats { host: state.metrics.host(), servers_online: online }))
 }
 
 /// Routes under `/api`.
