@@ -266,6 +266,8 @@ cargo test --workspace     # 89 backend tests
 cd web && npm test         # 29 frontend tests
 ```
 
+`./check.sh` runs everything CI runs, in the same order.
+
 CI runs the Rust suite on Linux **and** Windows, plus clippy as an error,
 `cargo fmt --check`, the frontend tests, and a release build that then starts
 the binary and asserts it is serving the embedded frontend — a build that
