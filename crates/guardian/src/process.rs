@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::task::AbortHandle;
 
 /// How often the supervisor checks whether the child has exited.
 const REAP_INTERVAL: Duration = Duration::from_millis(200);
@@ -27,6 +28,20 @@ const REAP_INTERVAL: Duration = Duration::from_millis(200);
 /// Vanilla and every fork log this once the world is loaded and the port is open.
 fn line_means_online(line: &str) -> bool {
     line.contains("Done (") && line.contains("For help, type")
+}
+
+/// Whether `start` is permitted from `status`.
+fn may_start(status: ServerStatus) -> bool {
+    matches!(status, ServerStatus::Offline | ServerStatus::Crashed)
+}
+
+/// Whether `stop` and `kill` are permitted from `status`.
+///
+/// `Preparing` counts: a download the operator no longer wants must be
+/// abandonable, or a slow provision leaves the server unusable until the panel
+/// itself is restarted.
+fn may_stop(status: ServerStatus) -> bool {
+    status.is_running() || status == ServerStatus::Preparing
 }
 
 /// Mutable runtime state, guarded as one unit so status and process cannot disagree.
@@ -39,6 +54,8 @@ struct RunState {
     started_at: Option<Instant>,
     /// Set by `stop`/`kill` so the supervisor knows the exit was requested.
     intentional: bool,
+    /// Handle to the in-flight provisioning task, so it can be abandoned.
+    preparing: Option<AbortHandle>,
     /// Incremented on every spawn; a supervisor whose generation is stale exits quietly.
     generation: u64,
 }
@@ -195,9 +212,17 @@ impl Guardian {
         let this = Arc::downgrade(self);
 
         let progress = move |stage: String, fraction: Option<f32>| {
-            if let Some(g) = this.upgrade() {
-                g.emit(ServerEvent::Progress { stage, fraction });
-            }
+            let Some(guardian) = this.upgrade() else { return };
+
+            guardian.emit(ServerEvent::Progress { stage: stage.clone(), fraction });
+
+            // Also recorded to the console, so a client that connects part-way
+            // through a long download still sees why the server is not up yet.
+            let line = match fraction {
+                Some(f) => format!("{stage} ({}%)", (f * 100.0).round() as u32),
+                None => stage,
+            };
+            tokio::spawn(async move { guardian.say(line).await });
         };
 
         let env = prepare(&config, &self.data_dir, progress).await?;
@@ -205,35 +230,67 @@ impl Guardian {
         Ok(env)
     }
 
-    /// Provision if needed, then spawn the JVM.
+    /// Begin starting the server, returning as soon as the work is under way.
     ///
-    /// Returns once the process exists; it will still be `Starting` at that
-    /// point. Wait for [`ServerStatus::Online`] on the event stream to know the
-    /// world has loaded.
+    /// Provisioning can take minutes — downloading a JDK and a server jar — so
+    /// it runs in a detached task rather than inside the caller's future. An
+    /// HTTP handler that is dropped when the browser navigates away must not be
+    /// able to strand the state machine in [`ServerStatus::Preparing`].
+    ///
+    /// Watch the event stream for [`ServerStatus::Starting`] and then
+    /// [`ServerStatus::Online`]; a failure reports [`ServerStatus::Offline`]
+    /// with the reason on the console.
     pub async fn start(self: &Arc<Self>) -> Result<()> {
         {
-            let state = self.state.lock().await;
+            let mut state = self.state.lock().await;
             let current = state.status.unwrap_or(ServerStatus::Offline);
-            if current.is_running() || current == ServerStatus::Preparing {
+            if !may_start(current) {
                 return Err(Error::InvalidTransition { current: current.as_str(), action: "start" });
             }
+            state.intentional = false;
         }
 
-        let env = match self.environment().await {
-            Some(env) => env,
+        self.set_status(ServerStatus::Preparing).await;
+
+        let this = Arc::clone(self);
+        let task = tokio::spawn(async move { this.provision_and_launch().await });
+
+        self.state.lock().await.preparing = Some(task.abort_handle());
+        Ok(())
+    }
+
+    /// Resolve the environment and spawn the JVM. Always leaves a terminal status.
+    async fn provision_and_launch(self: Arc<Self>) {
+        let environment = match self.environment().await {
+            Some(environment) => Ok(environment),
             None => {
-                self.set_status(ServerStatus::Preparing).await;
-                match self.prepare().await {
-                    Ok(env) => env,
-                    Err(e) => {
-                        self.say(format!("preparation failed: {e}")).await;
-                        self.set_status(ServerStatus::Offline).await;
-                        return Err(e);
-                    }
+                let limit = Duration::from_secs(self.policy().await.prepare_timeout_secs);
+                match tokio::time::timeout(limit, self.prepare()).await {
+                    Ok(result) => result,
+                    // A download that never finishes is indistinguishable from
+                    // one that never started, and both must end somewhere.
+                    Err(_) => Err(Error::PrepareTimedOut(limit.as_secs())),
                 }
             }
         };
 
+        let outcome = match environment {
+            Ok(environment) => self.launch(environment).await,
+            Err(e) => Err(e),
+        };
+
+        if let Err(e) = outcome {
+            self.say(format!("could not start: {e}")).await;
+            self.state.lock().await.preparing = None;
+            self.set_status(ServerStatus::Offline).await;
+            return;
+        }
+
+        self.state.lock().await.preparing = None;
+    }
+
+    /// Spawn the JVM for an already-resolved environment.
+    async fn launch(self: &Arc<Self>, env: ServerEnvironment) -> Result<()> {
         let config = self.config().await;
         let mut command = Command::new(&env.java);
         command
@@ -393,13 +450,50 @@ impl Guardian {
         Ok(())
     }
 
+    /// Abandon an in-flight provision, leaving the server offline.
+    ///
+    /// Safe to lose the race with a launch that has just spawned: if a child
+    /// exists by the time the lock is taken, this becomes an ordinary kill
+    /// rather than a status change that contradicts a running process.
+    pub async fn cancel_preparation(&self) -> Result<()> {
+        let launched = {
+            let mut state = self.state.lock().await;
+
+            if let Some(task) = state.preparing.take() {
+                task.abort();
+            }
+
+            let launched = state.child.is_some();
+            if let Some(child) = state.child.as_mut() {
+                let _ = child.start_kill();
+            }
+            if launched {
+                state.intentional = true;
+            }
+            launched
+        };
+
+        if !launched {
+            self.say("preparation cancelled").await;
+            self.set_status(ServerStatus::Offline).await;
+        }
+
+        Ok(())
+    }
+
     /// Ask the server to shut down, killing it if it does not comply in time.
+    ///
+    /// While [`ServerStatus::Preparing`] this abandons the provision instead.
     pub async fn stop(&self) -> Result<()> {
         {
             let mut state = self.state.lock().await;
             let current = state.status.unwrap_or(ServerStatus::Offline);
-            if !current.is_running() {
+            if !may_stop(current) {
                 return Err(Error::InvalidTransition { current: current.as_str(), action: "stop" });
+            }
+            if current == ServerStatus::Preparing {
+                drop(state);
+                return self.cancel_preparation().await;
             }
             state.intentional = true;
         }
@@ -424,7 +518,13 @@ impl Guardian {
     }
 
     /// Terminate the process immediately, without asking.
+    ///
+    /// While [`ServerStatus::Preparing`] this abandons the provision instead.
     pub async fn kill(&self) -> Result<()> {
+        if self.status().await == ServerStatus::Preparing {
+            return self.cancel_preparation().await;
+        }
+
         let mut state = self.state.lock().await;
         state.intentional = true;
         if let Some(child) = state.child.as_mut() {
@@ -435,7 +535,7 @@ impl Guardian {
 
     /// Stop and start again, tolerating an already-stopped server.
     pub async fn restart(self: &Arc<Self>) -> Result<()> {
-        if self.status().await.is_running() {
+        if may_stop(self.status().await) {
             self.stop().await?;
         }
         // The supervisor clears the child asynchronously; wait for it so the
@@ -459,6 +559,33 @@ mod tests {
         assert!(line_means_online(
             r#"[11:05:24 INFO]: Done (12.612s)! For help, type "help""#
         ));
+    }
+
+    #[test]
+    fn a_preparing_server_can_be_stopped_but_not_started_again() {
+        // Refusing to stop while preparing is what left a cancelled download
+        // stuck: nothing short of restarting the panel could clear it.
+        assert!(may_stop(ServerStatus::Preparing));
+        assert!(!may_start(ServerStatus::Preparing));
+    }
+
+    #[test]
+    fn only_a_settled_server_can_be_started() {
+        assert!(may_start(ServerStatus::Offline));
+        assert!(may_start(ServerStatus::Crashed));
+
+        assert!(!may_start(ServerStatus::Starting));
+        assert!(!may_start(ServerStatus::Online));
+        assert!(!may_start(ServerStatus::Stopping));
+    }
+
+    #[test]
+    fn a_settled_server_cannot_be_stopped() {
+        assert!(!may_stop(ServerStatus::Offline));
+        assert!(!may_stop(ServerStatus::Crashed));
+
+        assert!(may_stop(ServerStatus::Starting));
+        assert!(may_stop(ServerStatus::Online));
     }
 
     #[test]

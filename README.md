@@ -133,6 +133,17 @@ has been granted, across every endpoint including the console socket and the
 file manager. Changing an account's password or permissions revokes its existing
 sessions, so a demotion takes effect immediately rather than at the next login.
 
+### Starting a server
+
+`POST /servers/{id}/power` with `start` returns as soon as the work is accepted,
+not when the server is up. Provisioning downloads a JDK and a server jar and can
+take minutes, so it runs detached from the request: a browser that navigates
+away mid-download cannot strand the server in `preparing`.
+
+Watch the WebSocket for `starting` and then `online`. A failure reports
+`offline` with the reason on the console, and `stop` or `kill` during
+`preparing` abandons the download and returns the server to `offline`.
+
 ### Backups
 
 A backup is a gzipped tarball of the worlds, configuration, plugins and player
@@ -167,7 +178,7 @@ compile error rather than a `{missing}` in the UI. To add a language, copy
 cargo test --workspace
 ```
 
-60 tests. The supervisor ones spawn real child processes against a shell script
+67 tests. The supervisor ones spawn real child processes against a shell script
 standing in for the JVM, so the status machine, stdio pumps, graceful stop, kill
 fallback and restart policy are exercised for real rather than mocked. Only the
 Java/jar provisioning is stubbed — downloading a JDK is not a unit test's job.

@@ -100,6 +100,8 @@ export const es: Dictionary = {
     back: "Servidores",
     meta: "{core} {version} · puerto {port} · pid {pid} · activo {uptime}",
     resources: "{cpu}% CPU · {memory} MB",
+    preparing:
+      "Descargando Java y el jar del servidor. En el primer arranque puede tardar unos minutos — el progreso aparece en la consola. Cancela para abandonarlo.",
     eulaWarning:
       "No se ha aceptado el EULA de Minecraft para este servidor, así que no arrancará. Acéptalo en Ajustes.",
     tabs: {

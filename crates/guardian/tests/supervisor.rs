@@ -380,3 +380,113 @@ done
 
     guardian.stop().await.unwrap();
 }
+
+/// A launch that cannot even spawn must settle, not sit in `Preparing`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_launch_that_cannot_spawn_returns_to_offline() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("server.jar"), b"not really a jar").unwrap();
+
+    let mut config = ServerConfig::paper(tmp.path(), "1.21.8");
+    config.eula_accepted = true;
+
+    let guardian = Guardian::new(config, GuardianConfig::default(), tmp.path());
+    guardian
+        .set_environment(ServerEnvironment {
+            java: PathBuf::from("/nonexistent/bin/java"),
+            java_major: 21,
+            jar: tmp.path().join("server.jar"),
+            directory: tmp.path().to_path_buf(),
+        })
+        .await;
+
+    let mut events = guardian.subscribe();
+
+    // `start` reports success because the work was accepted, not completed.
+    guardian.start().await.unwrap();
+    await_status(&mut events, ServerStatus::Offline).await;
+
+    assert!(guardian.console().await.iter().any(|l| l.line.contains("could not start")));
+
+    // And the failure must leave the server startable again.
+    assert!(guardian.start().await.is_ok());
+}
+
+/// Provisioning that never finishes must not pin the server in `Preparing`.
+#[tokio::test(flavor = "multi_thread")]
+async fn provisioning_that_overruns_its_limit_gives_up() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    let mut config = ServerConfig::paper(tmp.path(), "1.21.8");
+    config.eula_accepted = true;
+
+    // No cached environment, so this really enters provisioning — and a zero
+    // budget means it cannot finish, whatever the network is doing.
+    let policy = GuardianConfig { prepare_timeout_secs: 0, ..GuardianConfig::default() };
+    let guardian = Guardian::new(config, policy, tmp.path());
+    let mut events = guardian.subscribe();
+
+    guardian.start().await.unwrap();
+    await_status(&mut events, ServerStatus::Offline).await;
+
+    assert!(guardian.snapshot().await.pid.is_none());
+    assert!(guardian.start().await.is_ok(), "the server must be startable again");
+}
+
+/// The exact dead end from the bug report: a provision the operator abandons.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_abandoned_provision_can_be_stopped_and_started_again() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    let mut config = ServerConfig::paper(tmp.path(), "1.21.8");
+    config.eula_accepted = true;
+    // A Java nobody has, so provisioning has real work to do and cannot race
+    // to completion before the stop below.
+    config.java_major = 999;
+
+    let guardian = Guardian::new(config, GuardianConfig::default(), tmp.path());
+
+    guardian.start().await.unwrap();
+    assert_eq!(guardian.status().await, ServerStatus::Preparing);
+
+    // Previously this was rejected, and nothing short of restarting the panel
+    // could clear the status.
+    guardian.stop().await.unwrap();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while guardian.status().await == ServerStatus::Preparing
+        && tokio::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    assert_eq!(guardian.status().await, ServerStatus::Offline);
+    assert!(guardian.snapshot().await.pid.is_none());
+    assert!(guardian.start().await.is_ok(), "the server must be startable again");
+}
+
+/// `kill` is the other escape hatch, and has to work the same way.
+#[tokio::test(flavor = "multi_thread")]
+async fn killing_during_provisioning_also_recovers() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    let mut config = ServerConfig::paper(tmp.path(), "1.21.8");
+    config.eula_accepted = true;
+    config.java_major = 999;
+
+    let guardian = Guardian::new(config, GuardianConfig::default(), tmp.path());
+
+    guardian.start().await.unwrap();
+    assert_eq!(guardian.status().await, ServerStatus::Preparing);
+
+    guardian.kill().await.unwrap();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while guardian.status().await == ServerStatus::Preparing
+        && tokio::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    assert_eq!(guardian.status().await, ServerStatus::Offline);
+}

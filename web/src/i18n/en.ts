@@ -96,6 +96,8 @@ export const en = {
     back: "Servers",
     meta: "{core} {version} · port {port} · pid {pid} · up {uptime}",
     resources: "{cpu}% CPU · {memory} MB",
+    preparing:
+      "Downloading Java and the server jar. This can take a few minutes on a first start — progress appears in the console. Cancel to abandon it.",
     eulaWarning:
       "The Minecraft EULA has not been accepted for this server, so it will refuse to start. Accept it under Settings.",
     tabs: {

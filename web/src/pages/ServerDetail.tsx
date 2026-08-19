@@ -115,7 +115,8 @@ export function ServerDetail({
               {t("dashboard.restart")}
             </Button>
             <Button variant="danger" disabled={!running} onClick={() => power("stop")}>
-              {t("dashboard.stop")}
+              {/* While provisioning there is nothing to shut down — only work to abandon. */}
+              {server.status === "preparing" ? t("common.cancel") : t("dashboard.stop")}
             </Button>
             <Button variant="ghost" disabled={!running} onClick={() => power("kill")}>
               {t("dashboard.kill")}
@@ -125,6 +126,8 @@ export function ServerDetail({
       </header>
 
       {!server.eula_accepted && <Banner kind="info">{t("server.eulaWarning")}</Banner>}
+
+      {server.status === "preparing" && <Banner kind="info">{t("server.preparing")}</Banner>}
 
       <nav class="flex gap-1 border-b border-ink-700">
         {(["console", "files", "plugins", "backups", "settings"] as Tab[]).map((name) => (

@@ -134,7 +134,7 @@ export function Dashboard({
                   disabled={server.status === "offline" || server.status === "crashed"}
                   onClick={() => power(server.id, "stop")}
                 >
-                  {t("dashboard.stop")}
+                  {server.status === "preparing" ? t("common.cancel") : t("dashboard.stop")}
                 </Button>
                 <Button variant="ghost" onClick={() => onOpen(server.id)}>
                   {t("dashboard.manage")}

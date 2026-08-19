@@ -67,6 +67,10 @@ pub enum Error {
     #[error("archive entry {0} would escape the destination")]
     UnsafeArchiveEntry(String),
 
+    /// Provisioning exceeded the configured limit.
+    #[error("preparation did not finish within {0}s")]
+    PrepareTimedOut(u64),
+
     /// A blocking task panicked or was cancelled.
     #[error("background task failed: {0}")]
     Task(String),

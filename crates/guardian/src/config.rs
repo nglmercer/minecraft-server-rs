@@ -99,6 +99,15 @@ pub struct GuardianConfig {
     pub stop_timeout_secs: u64,
     /// How many console lines to retain for late-joining clients.
     pub console_buffer: usize,
+    /// Give up on downloading Java and the server jar after this long.
+    #[serde(default = "default_prepare_timeout")]
+    pub prepare_timeout_secs: u64,
+}
+
+/// Generous enough for a JDK and a server jar on a slow line, finite enough
+/// that a stalled download does not pin the server in `Preparing` forever.
+fn default_prepare_timeout() -> u64 {
+    900
 }
 
 impl Default for GuardianConfig {
@@ -109,6 +118,7 @@ impl Default for GuardianConfig {
             retry_delay_secs: 5,
             stop_timeout_secs: 60,
             console_buffer: 500,
+            prepare_timeout_secs: default_prepare_timeout(),
         }
     }
 }
