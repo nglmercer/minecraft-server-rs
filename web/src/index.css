@@ -1,0 +1,45 @@
+@import "tailwindcss";
+
+/* The panel is dark-only on purpose: it lives next to a terminal. */
+@theme {
+  --color-ink-950: #080b10;
+  --color-ink-900: #0b0f14;
+  --color-ink-850: #10161e;
+  --color-ink-800: #151d27;
+  --color-ink-700: #1e2937;
+  --color-ink-600: #2b3a4d;
+  --color-fg: #e6edf3;
+  --color-fg-muted: #8b98a9;
+  --color-accent: #22c55e;
+  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  background: var(--color-ink-900);
+  color: var(--color-fg);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* A scrollbar that does not fight the dark surface it sits on. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-ink-600) transparent;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-ink-600);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

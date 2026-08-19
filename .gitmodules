@@ -1,0 +1,6 @@
+[submodule "vendor/java-path-rs"]
+	path = vendor/java-path-rs
+	url = https://github.com/nglmercer/java-path-rs
+[submodule "vendor/minecraft-core-rs"]
+	path = vendor/minecraft-core-rs
+	url = https://github.com/nglmercer/minecraft-core-rs

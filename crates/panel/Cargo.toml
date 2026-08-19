@@ -1,0 +1,44 @@
+[package]
+name = "panel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A single-binary Minecraft server control panel"
+
+[[bin]]
+name = "mcpanel"
+path = "src/main.rs"
+
+[dependencies]
+guardian = { path = "../guardian" }
+java-path.workspace = true
+minecraft-core.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+
+axum = { version = "0.8", features = ["ws", "macros", "multipart"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+rust-embed = { version = "8", features = ["interpolate-folder-path"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+rand = "0.9"
+argon2 = "0.5"
+password-hash = { version = "0.5", features = ["std"] }
+sysinfo = "0.33"
+mime_guess = "2"
+tokio-util = { version = "0.7", features = ["io"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+futures-util = "0.3"
+time = { version = "0.3", features = ["formatting"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
