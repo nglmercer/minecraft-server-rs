@@ -149,13 +149,17 @@ fn directory_size(root: &Path) -> u64 {
     let mut stack = vec![root.to_path_buf()];
 
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
 
         for entry in entries.flatten() {
             // symlink_metadata, not metadata: following links would count a tree
             // reachable elsewhere twice, and a link back to an ancestor would
             // send this walk round forever.
-            let Ok(meta) = std::fs::symlink_metadata(entry.path()) else { continue };
+            let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
+                continue;
+            };
 
             if meta.is_symlink() {
                 continue;

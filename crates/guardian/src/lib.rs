@@ -28,14 +28,14 @@ pub mod backup;
 pub mod config;
 pub mod environment;
 pub mod error;
-pub mod install;
 pub mod events;
+pub mod install;
 pub mod process;
 
 pub use backup::Backup;
 pub use config::{GuardianConfig, Memory, ServerConfig};
-pub use environment::{prepare, resolve_java, resolve_jar, Provision, ServerEnvironment};
-pub use install::Installation;
+pub use environment::{prepare, resolve_jar, resolve_java, Provision, ServerEnvironment};
 pub use error::{Error, Result};
 pub use events::{ConsoleLine, ServerEvent, ServerStatus, Stream};
+pub use install::Installation;
 pub use process::{Guardian, Snapshot};

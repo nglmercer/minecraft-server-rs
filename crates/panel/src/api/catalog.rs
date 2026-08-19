@@ -126,14 +126,23 @@ async fn system(
         if !identity.may_access(&record.id) {
             continue;
         }
-        if state.guardian(&record.id).await?.status().await.is_running() {
+        if state
+            .guardian(&record.id)
+            .await?
+            .status()
+            .await
+            .is_running()
+        {
             online += 1;
         }
     }
 
     // Sampled from the long-lived Metrics, which keeps the previous CPU reading
     // to measure against.
-    Ok(Json(SystemStats { host: state.metrics.host(), servers_online: online }))
+    Ok(Json(SystemStats {
+        host: state.metrics.host(),
+        servers_online: online,
+    }))
 }
 
 /// Routes under `/api`.

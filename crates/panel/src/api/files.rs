@@ -54,7 +54,9 @@ fn resolve(root: &Path, relative: &str) -> ApiResult<PathBuf> {
             Component::Normal(part) => out.push(part),
             Component::CurDir => {}
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(ApiError::BadRequest("path escapes the server directory".into()));
+                return Err(ApiError::BadRequest(
+                    "path escapes the server directory".into(),
+                ));
             }
         }
     }
@@ -97,7 +99,9 @@ async fn list(
 
     let mut entries = Vec::new();
     while let Ok(Some(item)) = dir.next_entry().await {
-        let Ok(meta) = item.metadata().await else { continue };
+        let Ok(meta) = item.metadata().await else {
+            continue;
+        };
         entries.push(Entry {
             name: item.file_name().to_string_lossy().into_owned(),
             path: relative_of(&root, &item.path()),
@@ -145,11 +149,16 @@ async fn read(
         )));
     }
 
-    let bytes = tokio::fs::read(&target).await.map_err(|e| ApiError::Internal(e.into()))?;
+    let bytes = tokio::fs::read(&target)
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
     let content = String::from_utf8(bytes)
         .map_err(|_| ApiError::BadRequest("file is not valid UTF-8".into()))?;
 
-    Ok(Json(FileContents { path: query.path, content }))
+    Ok(Json(FileContents {
+        path: query.path,
+        content,
+    }))
 }
 
 /// Body of `PUT /api/servers/:id/files`.
@@ -190,7 +199,9 @@ async fn delete(
     let target = resolve(&root, &query.path)?;
 
     if target == root {
-        return Err(ApiError::BadRequest("refusing to delete the server root".into()));
+        return Err(ApiError::BadRequest(
+            "refusing to delete the server root".into(),
+        ));
     }
 
     let meta = tokio::fs::metadata(&target)
@@ -255,7 +266,9 @@ async fn sizes(
 
     let mut out = Vec::new();
     while let Ok(Some(item)) = dir.next_entry().await {
-        let Ok(meta) = item.metadata().await else { continue };
+        let Ok(meta) = item.metadata().await else {
+            continue;
+        };
         if !meta.is_dir() {
             continue;
         }
@@ -380,7 +393,9 @@ async fn upload(
         .await
         .map_err(|e| ApiError::BadRequest(format!("malformed upload: {e}")))?
     {
-        let Some(filename) = field.file_name().map(str::to_string) else { continue };
+        let Some(filename) = field.file_name().map(str::to_string) else {
+            continue;
+        };
 
         // The client controls this name, so it goes through the same sandbox as
         // every other path rather than being trusted.
@@ -411,7 +426,9 @@ async fn upload(
                 .await
                 .map_err(|e| ApiError::Internal(e.into()))?;
         }
-        file.flush().await.map_err(|e| ApiError::Internal(e.into()))?;
+        file.flush()
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
 
         written.push(relative);
     }
@@ -570,7 +587,9 @@ async fn rename(
     let to = resolve(&root, &body.to)?;
 
     if from == root || to == root {
-        return Err(ApiError::BadRequest("refusing to rename the server root".into()));
+        return Err(ApiError::BadRequest(
+            "refusing to rename the server root".into(),
+        ));
     }
     if let Some(parent) = to.parent() {
         tokio::fs::create_dir_all(parent)
@@ -615,7 +634,10 @@ mod tests {
         );
         assert_eq!(resolve(&root(), "").unwrap(), root());
         // A leading slash is a client habit, not an attempt to escape.
-        assert_eq!(resolve(&root(), "/plugins").unwrap(), root().join("plugins"));
+        assert_eq!(
+            resolve(&root(), "/plugins").unwrap(),
+            root().join("plugins")
+        );
         assert_eq!(resolve(&root(), "./a/./b").unwrap(), root().join("a/b"));
     }
 

@@ -65,7 +65,10 @@ mod tests {
     use super::*;
 
     fn file() -> Resource {
-        Resource::File { server: "abc".into(), path: "server.properties".into() }
+        Resource::File {
+            server: "abc".into(),
+            path: "server.properties".into(),
+        }
     }
 
     #[test]
@@ -101,7 +104,10 @@ mod tests {
         let granted = tickets.redeem(&ticket).unwrap();
         assert_ne!(
             granted,
-            Resource::File { server: "abc".into(), path: "ops.json".into() }
+            Resource::File {
+                server: "abc".into(),
+                path: "ops.json".into()
+            }
         );
     }
 }

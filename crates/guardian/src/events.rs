@@ -37,7 +37,10 @@ impl ServerStatus {
 
     /// Whether a process is expected to exist in this state.
     pub fn is_running(self) -> bool {
-        matches!(self, ServerStatus::Starting | ServerStatus::Online | ServerStatus::Stopping)
+        matches!(
+            self,
+            ServerStatus::Starting | ServerStatus::Online | ServerStatus::Stopping
+        )
     }
 }
 
@@ -126,7 +129,10 @@ mod tests {
 
     #[test]
     fn events_are_tagged_so_the_client_can_switch_on_type() {
-        let event = ServerEvent::Crashed { code: Some(1), attempt: 2 };
+        let event = ServerEvent::Crashed {
+            code: Some(1),
+            attempt: 2,
+        };
         let json = serde_json::to_value(&event).unwrap();
 
         assert_eq!(json["type"], "crashed");

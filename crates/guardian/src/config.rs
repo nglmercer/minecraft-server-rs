@@ -18,14 +18,20 @@ pub struct Memory {
 
 impl Default for Memory {
     fn default() -> Self {
-        Memory { min_mb: 1024, max_mb: 2048 }
+        Memory {
+            min_mb: 1024,
+            max_mb: 2048,
+        }
     }
 }
 
 impl Memory {
     /// The `-Xms`/`-Xmx` pair, in the order the JVM expects them.
     pub fn jvm_flags(&self) -> [String; 2] {
-        [format!("-Xms{}M", self.min_mb), format!("-Xmx{}M", self.max_mb)]
+        [
+            format!("-Xms{}M", self.min_mb),
+            format!("-Xmx{}M", self.max_mb),
+        ]
     }
 }
 
@@ -162,8 +168,14 @@ mod tests {
 
     #[test]
     fn heap_flags_are_emitted_in_jvm_order() {
-        let memory = Memory { min_mb: 512, max_mb: 4096 };
-        assert_eq!(memory.jvm_flags(), ["-Xms512M".to_string(), "-Xmx4096M".to_string()]);
+        let memory = Memory {
+            min_mb: 512,
+            max_mb: 4096,
+        };
+        assert_eq!(
+            memory.jvm_flags(),
+            ["-Xms512M".to_string(), "-Xmx4096M".to_string()]
+        );
     }
 
     #[test]
@@ -184,7 +196,10 @@ mod tests {
         assert_eq!(config.memory.max_mb, 2048);
         assert!(config.jvm_args.is_empty());
         assert!(config.build.is_none());
-        assert!(!config.eula_accepted, "the EULA must never default to accepted");
+        assert!(
+            !config.eula_accepted,
+            "the EULA must never default to accepted"
+        );
     }
 
     #[test]
@@ -203,7 +218,10 @@ mod tests {
     fn the_default_policy_restarts_a_bounded_number_of_times() {
         let policy = GuardianConfig::default();
         assert!(policy.auto_restart);
-        assert!(policy.max_retries > 0, "an unbounded retry loop would hammer a broken server");
+        assert!(
+            policy.max_retries > 0,
+            "an unbounded retry loop would hammer a broken server"
+        );
         assert!(policy.console_buffer > 0);
     }
 }

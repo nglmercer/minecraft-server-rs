@@ -1,8 +1,8 @@
 //! Login, logout and "who am I".
 
 use axum::extract::State;
-use axum::{Json, Router};
 use axum::routing::{get, post};
+use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -33,7 +33,10 @@ pub struct UserView {
 
 impl From<&Identity> for UserView {
     fn from(identity: &Identity) -> Self {
-        UserView { username: identity.username.clone(), admin: identity.admin }
+        UserView {
+            username: identity.username.clone(),
+            admin: identity.admin,
+        }
     }
 }
 
@@ -41,7 +44,11 @@ async fn login(
     State(state): State<Arc<AppState>>,
     Json(body): Json<LoginRequest>,
 ) -> ApiResult<Json<LoginResponse>> {
-    let user = state.store.user(&body.username).await.ok_or(ApiError::Unauthorized)?;
+    let user = state
+        .store
+        .user(&body.username)
+        .await
+        .ok_or(ApiError::Unauthorized)?;
 
     if !verify_password(&body.password, &user.password_hash) {
         return Err(ApiError::Unauthorized);
@@ -54,7 +61,10 @@ async fn login(
     };
     let token = state.sessions.create(identity.clone()).await;
 
-    Ok(Json(LoginResponse { token, user: UserView::from(&identity) }))
+    Ok(Json(LoginResponse {
+        token,
+        user: UserView::from(&identity),
+    }))
 }
 
 async fn me(identity: Identity) -> Json<UserView> {
@@ -89,10 +99,16 @@ async fn change_password(
     Json(body): Json<ChangePassword>,
 ) -> ApiResult<Json<serde_json::Value>> {
     if body.new.len() < 8 {
-        return Err(ApiError::BadRequest("password must be at least 8 characters".into()));
+        return Err(ApiError::BadRequest(
+            "password must be at least 8 characters".into(),
+        ));
     }
 
-    let user = state.store.user(&identity.username).await.ok_or(ApiError::Unauthorized)?;
+    let user = state
+        .store
+        .user(&identity.username)
+        .await
+        .ok_or(ApiError::Unauthorized)?;
     if !verify_password(&body.current, &user.password_hash) {
         return Err(ApiError::Unauthorized);
     }
@@ -103,7 +119,11 @@ async fn change_password(
     state
         .store
         .update(|data| {
-            if let Some(u) = data.users.iter_mut().find(|u| u.username == identity.username) {
+            if let Some(u) = data
+                .users
+                .iter_mut()
+                .find(|u| u.username == identity.username)
+            {
                 u.password_hash = hash;
             }
         })

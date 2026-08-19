@@ -4,7 +4,9 @@
 //! everyone out, which for a self-hosted single-box panel is an acceptable
 //! trade for not having to manage a signing key.
 
-use argon2::password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::password_hash::{
+    rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString,
+};
 use argon2::Argon2;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
@@ -23,13 +25,17 @@ const SESSION_TTL: Duration = Duration::from_secs(60 * 60 * 24 * 7);
 /// Hash a password for storage.
 pub fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error> {
     let salt = SaltString::generate(&mut OsRng);
-    Ok(Argon2::default().hash_password(password.as_bytes(), &salt)?.to_string())
+    Ok(Argon2::default()
+        .hash_password(password.as_bytes(), &salt)?
+        .to_string())
 }
 
 /// Check a password against a stored PHC hash.
 pub fn verify_password(password: &str, hash: &str) -> bool {
     match PasswordHash::new(hash) {
-        Ok(parsed) => Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok(),
+        Ok(parsed) => Argon2::default()
+            .verify_password(password.as_bytes(), &parsed)
+            .is_ok(),
         Err(_) => false,
     }
 }
@@ -46,7 +52,10 @@ pub fn generate_password() -> String {
     const ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     let mut bytes = [0u8; 16];
     rand::rng().fill_bytes(&mut bytes);
-    bytes.iter().map(|b| ALPHABET[*b as usize % ALPHABET.len()] as char).collect()
+    bytes
+        .iter()
+        .map(|b| ALPHABET[*b as usize % ALPHABET.len()] as char)
+        .collect()
 }
 
 /// A logged-in user, as carried by a session.
@@ -89,7 +98,13 @@ impl Sessions {
         // months accumulates sessions nobody will ever resolve again.
         sessions.retain(|_, session| session.last_seen.elapsed() < SESSION_TTL);
 
-        sessions.insert(token.clone(), Session { identity, last_seen: Instant::now() });
+        sessions.insert(
+            token.clone(),
+            Session {
+                identity,
+                last_seen: Instant::now(),
+            },
+        );
         token
     }
 
@@ -112,7 +127,10 @@ impl Sessions {
 
     /// Drop every session belonging to `username`, used when a password changes.
     pub async fn revoke_user(&self, username: &str) {
-        self.inner.write().await.retain(|_, s| s.identity.username != username);
+        self.inner
+            .write()
+            .await
+            .retain(|_, s| s.identity.username != username);
     }
 }
 
@@ -151,7 +169,11 @@ impl FromRequestParts<Arc<AppState>> for Identity {
         state: &Arc<AppState>,
     ) -> Result<Self, Self::Rejection> {
         let token = extract_token(parts).ok_or(ApiError::Unauthorized)?;
-        state.sessions.resolve(&token).await.ok_or(ApiError::Unauthorized)
+        state
+            .sessions
+            .resolve(&token)
+            .await
+            .ok_or(ApiError::Unauthorized)
     }
 }
 
@@ -180,7 +202,11 @@ mod tests {
     use axum::http::Request;
 
     fn identity(name: &str) -> Identity {
-        Identity { username: name.into(), admin: false, servers: vec!["allowed".into()] }
+        Identity {
+            username: name.into(),
+            admin: false,
+            servers: vec!["allowed".into()],
+        }
     }
 
     #[test]
@@ -197,7 +223,10 @@ mod tests {
         let a = hash_password("same").unwrap();
         let b = hash_password("same").unwrap();
 
-        assert_ne!(a, b, "identical hashes would leak that two accounts share a password");
+        assert_ne!(
+            a, b,
+            "identical hashes would leak that two accounts share a password"
+        );
         assert!(verify_password("same", &a));
         assert!(verify_password("same", &b));
     }
@@ -234,7 +263,11 @@ mod tests {
         assert!(user.may_access("allowed"));
         assert!(!user.may_access("someone-elses"));
 
-        let admin = Identity { admin: true, servers: vec![], ..identity("root") };
+        let admin = Identity {
+            admin: true,
+            servers: vec![],
+            ..identity("root")
+        };
         assert!(admin.may_access("anything at all"));
     }
 
@@ -267,7 +300,10 @@ mod tests {
 
         assert!(sessions.resolve(&first).await.is_none());
         assert!(sessions.resolve(&second).await.is_none());
-        assert!(sessions.resolve(&other).await.is_some(), "alice was not involved");
+        assert!(
+            sessions.resolve(&other).await.is_some(),
+            "alice was not involved"
+        );
     }
 
     fn parts_for(uri: &str, header: Option<&str>) -> axum::http::request::Parts {

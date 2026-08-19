@@ -78,7 +78,9 @@ pub async fn resolve_java(
     on_progress(format!("installing Java {major}"), None);
 
     let dir = jdk_root(data_dir);
-    tokio::fs::create_dir_all(&dir).await.map_err(|e| Error::io(&dir, e))?;
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| Error::io(&dir, e))?;
 
     JavaInstaller::adoptium()
         .version(major)
@@ -103,7 +105,10 @@ pub async fn resolve_jar(
 
     let jar = config.directory.join("server.jar");
     on_progress(
-        format!("downloading {} {} build {}", config.core, config.version, build.build_id),
+        format!(
+            "downloading {} {} build {}",
+            config.core, config.version, build.build_id
+        ),
         None,
     );
 
@@ -117,12 +122,16 @@ pub async fn resolve_jar(
 /// Create the server directory and write the files the server refuses to start without.
 pub async fn scaffold(config: &ServerConfig) -> Result<()> {
     let dir = &config.directory;
-    tokio::fs::create_dir_all(dir).await.map_err(|e| Error::io(dir, e))?;
+    tokio::fs::create_dir_all(dir)
+        .await
+        .map_err(|e| Error::io(dir, e))?;
 
     if config.eula_accepted {
         let eula = dir.join("eula.txt");
         let body = "# Accepted through the panel.\neula=true\n";
-        tokio::fs::write(&eula, body).await.map_err(|e| Error::io(&eula, e))?;
+        tokio::fs::write(&eula, body)
+            .await
+            .map_err(|e| Error::io(&eula, e))?;
     }
 
     // server.properties is seeded once and then left to the operator, except for
@@ -139,7 +148,9 @@ pub async fn scaffold(config: &ServerConfig) -> Result<()> {
         ),
     };
 
-    tokio::fs::write(&props, body).await.map_err(|e| Error::io(&props, e))?;
+    tokio::fs::write(&props, body)
+        .await
+        .map_err(|e| Error::io(&props, e))?;
 
     Ok(())
 }
@@ -285,7 +296,10 @@ mod tests {
         let original = "#server-port=1234\nserver-port=25565\n";
         let updated = set_property(original, "server-port", "25599");
 
-        assert!(updated.contains("#server-port=1234"), "the comment must survive");
+        assert!(
+            updated.contains("#server-port=1234"),
+            "the comment must survive"
+        );
         assert!(updated.contains("server-port=25599"));
         assert!(!updated.contains("=25565"));
     }
@@ -306,17 +320,26 @@ mod tests {
 
         scaffold(&config).await.unwrap();
         let props = tmp.path().join("server.properties");
-        assert!(std::fs::read_to_string(&props).unwrap().contains("server-port=25565"));
+        assert!(std::fs::read_to_string(&props)
+            .unwrap()
+            .contains("server-port=25565"));
 
         // An operator edits the file by hand...
-        std::fs::write(&props, "server-port=25565\nmotd=My Server\ndifficulty=hard\n").unwrap();
+        std::fs::write(
+            &props,
+            "server-port=25565\nmotd=My Server\ndifficulty=hard\n",
+        )
+        .unwrap();
 
         // ...then changes the port in the panel.
         config.port = 25599;
         scaffold(&config).await.unwrap();
 
         let text = std::fs::read_to_string(&props).unwrap();
-        assert!(text.contains("server-port=25599"), "the panel's port must win");
+        assert!(
+            text.contains("server-port=25599"),
+            "the panel's port must win"
+        );
         assert!(text.contains("motd=My Server"), "hand edits must survive");
         assert!(text.contains("difficulty=hard"));
     }

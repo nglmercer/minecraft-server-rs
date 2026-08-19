@@ -73,11 +73,7 @@ async fn view(state: &AppState, record: &ServerRecord) -> ApiResult<ServerView> 
 }
 
 /// Resolve a record the caller is allowed to see.
-async fn authorized(
-    state: &AppState,
-    identity: &Identity,
-    id: &str,
-) -> ApiResult<ServerRecord> {
+async fn authorized(state: &AppState, identity: &Identity, id: &str) -> ApiResult<ServerRecord> {
     if !identity.may_access(id) {
         return Err(ApiError::Forbidden);
     }
@@ -165,7 +161,10 @@ async fn create(
         created_at: now(),
     };
 
-    state.store.update(|data| data.servers.push(record.clone())).await?;
+    state
+        .store
+        .update(|data| data.servers.push(record.clone()))
+        .await?;
     state.insert_guardian(&record).await;
     tracing::info!(server = %record.id, by = %admin.username, "server created");
 
@@ -274,7 +273,10 @@ async fn delete(
 
     tracing::info!(server = %id, by = %admin.username, "server deleted");
     state.remove_guardian(&id).await;
-    state.store.update(|data| data.servers.retain(|s| s.id != id)).await?;
+    state
+        .store
+        .update(|data| data.servers.retain(|s| s.id != id))
+        .await?;
 
     // Server files are deliberately left on disk: deleting a world by clicking
     // a button in a web UI is not a mistake anyone should be able to make.
@@ -333,7 +335,11 @@ async fn command(
     Json(body): Json<CommandRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
     authorized(&state, &identity, &id).await?;
-    state.guardian(&id).await?.command(body.command.trim()).await?;
+    state
+        .guardian(&id)
+        .await?
+        .command(body.command.trim())
+        .await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -372,7 +378,9 @@ async fn port_is_free(state: &AppState, port: u16, except: Option<&str>) -> ApiR
         .any(|s| s.config.port == port && Some(s.id.as_str()) != except);
 
     if clash {
-        return Err(ApiError::BadRequest(format!("port {port} is already assigned")));
+        return Err(ApiError::BadRequest(format!(
+            "port {port} is already assigned"
+        )));
     }
     Ok(())
 }

@@ -66,7 +66,10 @@ impl Store {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => PanelData::default(),
             Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
         };
-        Ok(Store { path, data: RwLock::new(data) })
+        Ok(Store {
+            path,
+            data: RwLock::new(data),
+        })
     }
 
     /// A snapshot of the current state.
@@ -92,7 +95,9 @@ impl Store {
 
         // Unique per write, so an unrelated process writing beside us — or a
         // leftover file from an earlier crash — cannot be mistaken for ours.
-        let tmp = self.path.with_extension(format!("json.{}.tmp", std::process::id()));
+        let tmp = self
+            .path
+            .with_extension(format!("json.{}.tmp", std::process::id()));
 
         tokio::fs::write(&tmp, &json)
             .await
@@ -107,12 +112,24 @@ impl Store {
 
     /// Find a user by name.
     pub async fn user(&self, username: &str) -> Option<User> {
-        self.data.read().await.users.iter().find(|u| u.username == username).cloned()
+        self.data
+            .read()
+            .await
+            .users
+            .iter()
+            .find(|u| u.username == username)
+            .cloned()
     }
 
     /// Find a server record by id.
     pub async fn server(&self, id: &str) -> Option<ServerRecord> {
-        self.data.read().await.servers.iter().find(|s| s.id == id).cloned()
+        self.data
+            .read()
+            .await
+            .servers
+            .iter()
+            .find(|s| s.id == id)
+            .cloned()
     }
 }
 
@@ -145,11 +162,17 @@ mod tests {
 
         {
             let store = Store::load(tmp.path()).await.unwrap();
-            store.update(|data| data.users.push(user("admin", true))).await.unwrap();
+            store
+                .update(|data| data.users.push(user("admin", true)))
+                .await
+                .unwrap();
         }
 
         let reloaded = Store::load(tmp.path()).await.unwrap();
-        let found = reloaded.user("admin").await.expect("the account should have survived");
+        let found = reloaded
+            .user("admin")
+            .await
+            .expect("the account should have survived");
 
         assert!(found.admin);
         assert!(reloaded.user("nobody").await.is_none());
@@ -159,7 +182,10 @@ mod tests {
     async fn a_write_leaves_no_temporary_file_behind() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::load(tmp.path()).await.unwrap();
-        store.update(|data| data.users.push(user("admin", true))).await.unwrap();
+        store
+            .update(|data| data.users.push(user("admin", true)))
+            .await
+            .unwrap();
 
         assert!(tmp.path().join("panel.json").exists());
         assert!(

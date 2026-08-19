@@ -9,9 +9,9 @@
 
 use crate::config::{GuardianConfig, ServerConfig};
 use crate::environment::{prepare, Provision, ServerEnvironment};
-use crate::install::Installation;
 use crate::error::{Error, Result};
 use crate::events::{ConsoleLine, ServerEvent, ServerStatus, Stream};
+use crate::install::Installation;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -89,13 +89,20 @@ pub struct Guardian {
 
 impl Guardian {
     /// Build a guardian for `config`. Nothing is provisioned or spawned yet.
-    pub fn new(config: ServerConfig, policy: GuardianConfig, data_dir: impl Into<PathBuf>) -> Arc<Self> {
+    pub fn new(
+        config: ServerConfig,
+        policy: GuardianConfig,
+        data_dir: impl Into<PathBuf>,
+    ) -> Arc<Self> {
         let (events, _) = broadcast::channel(1024);
         Arc::new(Guardian {
             config: RwLock::new(config),
             policy: RwLock::new(policy),
             data_dir: data_dir.into(),
-            state: Mutex::new(RunState { status: Some(ServerStatus::Offline), ..RunState::default() }),
+            state: Mutex::new(RunState {
+                status: Some(ServerStatus::Offline),
+                ..RunState::default()
+            }),
             events,
             console: Mutex::new(VecDeque::new()),
             environment: RwLock::new(None),
@@ -150,7 +157,11 @@ impl Guardian {
 
     /// Current status.
     pub async fn status(&self) -> ServerStatus {
-        self.state.lock().await.status.unwrap_or(ServerStatus::Offline)
+        self.state
+            .lock()
+            .await
+            .status
+            .unwrap_or(ServerStatus::Offline)
     }
 
     /// A consistent view of status, pid and uptime.
@@ -248,9 +259,14 @@ impl Guardian {
         let this = Arc::downgrade(self);
 
         let progress = move |stage: String, fraction: Option<f32>| {
-            let Some(guardian) = this.upgrade() else { return };
+            let Some(guardian) = this.upgrade() else {
+                return;
+            };
 
-            guardian.emit(ServerEvent::Progress { stage: stage.clone(), fraction });
+            guardian.emit(ServerEvent::Progress {
+                stage: stage.clone(),
+                fraction,
+            });
 
             // Also recorded to the console, so a client that connects part-way
             // through a long download still sees why the server is not up yet.
@@ -281,7 +297,10 @@ impl Guardian {
             let mut state = self.state.lock().await;
             let current = state.status.unwrap_or(ServerStatus::Offline);
             if !may_start(current) {
-                return Err(Error::InvalidTransition { current: current.as_str(), action: "start" });
+                return Err(Error::InvalidTransition {
+                    current: current.as_str(),
+                    action: "start",
+                });
             }
             state.intentional = false;
         }
@@ -363,7 +382,11 @@ impl Guardian {
 
         self.set_status(ServerStatus::Starting).await;
         self.emit(ServerEvent::Started { pid });
-        self.say(format!("started {} {} (pid {pid})", config.core, config.version)).await;
+        self.say(format!(
+            "started {} {} (pid {pid})",
+            config.core, config.version
+        ))
+        .await;
 
         if let Some(out) = stdout {
             self.spawn_reader(out, Stream::Stdout);
@@ -384,7 +407,9 @@ impl Guardian {
         tokio::spawn(async move {
             let mut lines = BufReader::new(reader).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                let Some(guardian) = this.upgrade() else { return };
+                let Some(guardian) = this.upgrade() else {
+                    return;
+                };
 
                 if stream == Stream::Stdout
                     && line_means_online(&line)
@@ -407,7 +432,9 @@ impl Guardian {
             loop {
                 tokio::time::sleep(REAP_INTERVAL).await;
 
-                let Some(guardian) = this.upgrade() else { return };
+                let Some(guardian) = this.upgrade() else {
+                    return;
+                };
 
                 let outcome = {
                     let mut state = guardian.state.lock().await;
@@ -425,7 +452,9 @@ impl Guardian {
                     }
                 };
 
-                let Some((code, intentional)) = outcome else { continue };
+                let Some((code, intentional)) = outcome else {
+                    continue;
+                };
 
                 {
                     let mut state = guardian.state.lock().await;
@@ -443,7 +472,9 @@ impl Guardian {
                 }
 
                 let attempt = guardian.crashes.fetch_add(1, Ordering::Relaxed) + 1;
-                guardian.say(format!("server exited unexpectedly with code {code:?}")).await;
+                guardian
+                    .say(format!("server exited unexpectedly with code {code:?}"))
+                    .await;
                 guardian.emit(ServerEvent::Crashed { code, attempt });
                 guardian.set_status(ServerStatus::Crashed).await;
 
@@ -453,7 +484,10 @@ impl Guardian {
                 }
                 if attempt > policy.max_retries {
                     guardian
-                        .say(format!("giving up after {} failed restarts", policy.max_retries))
+                        .say(format!(
+                            "giving up after {} failed restarts",
+                            policy.max_retries
+                        ))
                         .await;
                     return;
                 }
@@ -525,7 +559,10 @@ impl Guardian {
             let mut state = self.state.lock().await;
             let current = state.status.unwrap_or(ServerStatus::Offline);
             if !may_stop(current) {
-                return Err(Error::InvalidTransition { current: current.as_str(), action: "stop" });
+                return Err(Error::InvalidTransition {
+                    current: current.as_str(),
+                    action: "stop",
+                });
             }
             if current == ServerStatus::Preparing {
                 drop(state);

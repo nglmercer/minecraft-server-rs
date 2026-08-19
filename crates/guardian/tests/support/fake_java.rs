@@ -23,7 +23,10 @@ fn main() {
 
     // The real launcher fails this way, and the tests depend on it: a fake that
     // ignored its arguments could not notice a broken jar path.
-    let jar = args.windows(2).find(|pair| pair[0] == "-jar").map(|pair| &pair[1]);
+    let jar = args
+        .windows(2)
+        .find(|pair| pair[0] == "-jar")
+        .map(|pair| &pair[1]);
 
     let Some(jar) = jar else {
         eprintln!("Error: no -jar argument was passed");

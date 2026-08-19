@@ -9,7 +9,9 @@
 //! `server_args`, which is the same path a real server's arguments take.
 
 use guardian::events::Stream;
-use guardian::{Guardian, GuardianConfig, ServerConfig, ServerEnvironment, ServerEvent, ServerStatus};
+use guardian::{
+    Guardian, GuardianConfig, ServerConfig, ServerEnvironment, ServerEvent, ServerStatus,
+};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::broadcast::Receiver;
@@ -148,14 +150,20 @@ async fn an_unexpected_exit_crashes_and_restarts_up_to_the_retry_limit() {
     let mut attempts = Vec::new();
     while attempts.len() < 3 && tokio::time::Instant::now() < deadline {
         let remaining = deadline - tokio::time::Instant::now();
-        let Ok(Ok(event)) = tokio::time::timeout(remaining, events.recv()).await else { break };
+        let Ok(Ok(event)) = tokio::time::timeout(remaining, events.recv()).await else {
+            break;
+        };
         if let ServerEvent::Crashed { attempt, code } = event {
             assert_eq!(code, Some(1));
             attempts.push(attempt);
         }
     }
 
-    assert_eq!(attempts, vec![1, 2, 3], "expected the original plus two restarts");
+    assert_eq!(
+        attempts,
+        vec![1, 2, 3],
+        "expected the original plus two restarts"
+    );
     assert_eq!(guardian.status().await, ServerStatus::Crashed);
 
     // Having exhausted its retries, it must stay down rather than loop forever.
@@ -171,7 +179,10 @@ async fn an_unexpected_exit_crashes_and_restarts_up_to_the_retry_limit() {
 #[tokio::test(flavor = "multi_thread")]
 async fn auto_restart_can_be_switched_off() {
     let tmp = tempfile::tempdir().unwrap();
-    let policy = GuardianConfig { auto_restart: false, ..GuardianConfig::default() };
+    let policy = GuardianConfig {
+        auto_restart: false,
+        ..GuardianConfig::default()
+    };
     let guardian = guardian_with(tmp.path(), policy, &["exit:3"]);
     let mut events = guardian.subscribe();
 
@@ -179,7 +190,11 @@ async fn auto_restart_can_be_switched_off() {
     await_status(&mut events, ServerStatus::Crashed).await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(guardian.snapshot().await.crashes, 1, "it must not have retried");
+    assert_eq!(
+        guardian.snapshot().await.crashes,
+        1,
+        "it must not have retried"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -194,7 +209,11 @@ async fn starting_twice_is_rejected_rather_than_spawning_two_jvms() {
     let pid = guardian.snapshot().await.pid;
     let error = guardian.start().await.unwrap_err();
     assert!(matches!(error, guardian::Error::InvalidTransition { .. }));
-    assert_eq!(guardian.snapshot().await.pid, pid, "the original process must survive");
+    assert_eq!(
+        guardian.snapshot().await.pid,
+        pid,
+        "the original process must survive"
+    );
 
     guardian.stop().await.unwrap();
 }
@@ -212,7 +231,10 @@ async fn stopping_an_offline_server_is_rejected() {
 async fn a_server_that_ignores_stop_is_killed_after_the_timeout() {
     let tmp = tempfile::tempdir().unwrap();
     // This one never exits on "stop", the way a deadlocked server would not.
-    let policy = GuardianConfig { stop_timeout_secs: 1, ..GuardianConfig::default() };
+    let policy = GuardianConfig {
+        stop_timeout_secs: 1,
+        ..GuardianConfig::default()
+    };
     let guardian = guardian_with(tmp.path(), policy, &["done", "hang"]);
     let mut events = guardian.subscribe();
 
@@ -226,7 +248,10 @@ async fn a_server_that_ignores_stop_is_killed_after_the_timeout() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    assert!(guardian.snapshot().await.pid.is_none(), "the process was never killed");
+    assert!(
+        guardian.snapshot().await.pid.is_none(),
+        "the process was never killed"
+    );
     assert!(guardian
         .console()
         .await
@@ -279,7 +304,10 @@ async fn a_relative_jar_path_still_launches() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_console_buffer_is_bounded() {
     let tmp = tempfile::tempdir().unwrap();
-    let policy = GuardianConfig { console_buffer: 50, ..GuardianConfig::default() };
+    let policy = GuardianConfig {
+        console_buffer: 50,
+        ..GuardianConfig::default()
+    };
     let guardian = guardian_with(tmp.path(), policy, &["spam:200", "done", "serve"]);
     let mut events = guardian.subscribe();
 
@@ -319,7 +347,11 @@ async fn a_launch_that_cannot_spawn_returns_to_offline() {
     guardian.start().await.unwrap();
     await_status(&mut events, ServerStatus::Offline).await;
 
-    assert!(guardian.console().await.iter().any(|l| l.line.contains("could not start")));
+    assert!(guardian
+        .console()
+        .await
+        .iter()
+        .any(|l| l.line.contains("could not start")));
 
     // And the failure must leave the server startable again.
     assert!(guardian.start().await.is_ok());
@@ -335,7 +367,10 @@ async fn provisioning_that_overruns_its_limit_gives_up() {
 
     // No cached environment, so this really enters provisioning — and a zero
     // budget means it cannot finish, whatever the network is doing.
-    let policy = GuardianConfig { prepare_timeout_secs: 0, ..GuardianConfig::default() };
+    let policy = GuardianConfig {
+        prepare_timeout_secs: 0,
+        ..GuardianConfig::default()
+    };
     let guardian = Guardian::new(config, policy, tmp.path());
     let mut events = guardian.subscribe();
 
@@ -343,7 +378,10 @@ async fn provisioning_that_overruns_its_limit_gives_up() {
     await_status(&mut events, ServerStatus::Offline).await;
 
     assert!(guardian.snapshot().await.pid.is_none());
-    assert!(guardian.start().await.is_ok(), "the server must be startable again");
+    assert!(
+        guardian.start().await.is_ok(),
+        "the server must be startable again"
+    );
 }
 
 /// The exact dead end from the bug report: a provision the operator abandons.
@@ -375,7 +413,10 @@ async fn an_abandoned_provision_can_be_stopped_and_started_again() {
 
     assert_eq!(guardian.status().await, ServerStatus::Offline);
     assert!(guardian.snapshot().await.pid.is_none());
-    assert!(guardian.start().await.is_ok(), "the server must be startable again");
+    assert!(
+        guardian.start().await.is_ok(),
+        "the server must be startable again"
+    );
 }
 
 /// `kill` is the other escape hatch, and has to work the same way.

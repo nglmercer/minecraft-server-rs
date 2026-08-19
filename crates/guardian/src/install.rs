@@ -49,10 +49,16 @@ impl Installation {
     /// Why this installation cannot run `config`, phrased for the console.
     pub fn mismatch(&self, config: &ServerConfig) -> Option<String> {
         if self.core != config.core {
-            return Some(format!("server type changed from {} to {}", self.core, config.core));
+            return Some(format!(
+                "server type changed from {} to {}",
+                self.core, config.core
+            ));
         }
         if self.version != config.version {
-            return Some(format!("version changed from {} to {}", self.version, config.version));
+            return Some(format!(
+                "version changed from {} to {}",
+                self.version, config.version
+            ));
         }
         if self.java_major != config.java_major {
             return Some(format!(
@@ -86,7 +92,9 @@ impl Installation {
     pub async fn save(&self, server_dir: &Path) -> Result<()> {
         let path = server_dir.join(FILENAME);
         let body = serde_json::to_vec_pretty(self)?;
-        tokio::fs::write(&path, body).await.map_err(|e| Error::io(&path, e))
+        tokio::fs::write(&path, body)
+            .await
+            .map_err(|e| Error::io(&path, e))
     }
 }
 
@@ -188,7 +196,10 @@ mod tests {
         std::fs::remove_file(tmp.path().join("server.jar")).unwrap();
 
         assert!(!installation.satisfies(&config_for(tmp.path())));
-        assert!(installation.mismatch(&config_for(tmp.path())).unwrap().contains("missing"));
+        assert!(installation
+            .mismatch(&config_for(tmp.path()))
+            .unwrap()
+            .contains("missing"));
     }
 
     #[tokio::test]

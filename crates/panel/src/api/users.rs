@@ -59,7 +59,9 @@ async fn create(
         return Err(ApiError::BadRequest("username is required".into()));
     }
     if body.password.len() < 8 {
-        return Err(ApiError::BadRequest("password must be at least 8 characters".into()));
+        return Err(ApiError::BadRequest(
+            "password must be at least 8 characters".into(),
+        ));
     }
     if state.store.user(&username).await.is_some() {
         return Err(ApiError::BadRequest(format!("{username} already exists")));
@@ -74,7 +76,10 @@ async fn create(
     };
 
     let stored = user.clone();
-    state.store.update(move |data| data.users.push(stored)).await?;
+    state
+        .store
+        .update(move |data| data.users.push(stored))
+        .await?;
     tracing::info!(user = %username, "account created");
 
     Ok(Json(UserView::from(&user)))
@@ -102,7 +107,9 @@ async fn update(
 
     if let Some(password) = &body.password {
         if password.len() < 8 {
-            return Err(ApiError::BadRequest("password must be at least 8 characters".into()));
+            return Err(ApiError::BadRequest(
+                "password must be at least 8 characters".into(),
+            ));
         }
         user.password_hash = hash_password(password)
             .map_err(|e| ApiError::Internal(anyhow::anyhow!("hashing failed: {e}")))?;
@@ -127,7 +134,11 @@ async fn update(
     state
         .store
         .update(move |data| {
-            if let Some(slot) = data.users.iter_mut().find(|u| u.username == stored.username) {
+            if let Some(slot) = data
+                .users
+                .iter_mut()
+                .find(|u| u.username == stored.username)
+            {
                 *slot = stored;
             }
         })
@@ -146,7 +157,9 @@ async fn delete(
     Path(username): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
     if username == admin.username {
-        return Err(ApiError::BadRequest("you cannot delete your own account".into()));
+        return Err(ApiError::BadRequest(
+            "you cannot delete your own account".into(),
+        ));
     }
     if state.store.user(&username).await.is_none() {
         return Err(ApiError::NotFound(format!("user {username}")));
@@ -158,7 +171,10 @@ async fn delete(
     }
 
     let name = username.clone();
-    state.store.update(move |data| data.users.retain(|u| u.username != name)).await?;
+    state
+        .store
+        .update(move |data| data.users.retain(|u| u.username != name))
+        .await?;
     state.sessions.revoke_user(&username).await;
     tracing::info!(user = %username, by = %admin.username, "account deleted");
 
@@ -174,7 +190,8 @@ async fn last_admin(state: &AppState, username: &str) -> ApiResult<bool> {
 
 /// Routes under `/api/users`.
 pub fn router() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/users", get(list).post(create))
-        .route("/users/{username}", axum::routing::patch(update).delete(delete))
+    Router::new().route("/users", get(list).post(create)).route(
+        "/users/{username}",
+        axum::routing::patch(update).delete(delete),
+    )
 }

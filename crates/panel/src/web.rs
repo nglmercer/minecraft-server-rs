@@ -62,7 +62,10 @@ fn asset(path: &str) -> Option<Response> {
     Some(
         (
             StatusCode::OK,
-            [(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, cache.to_string())],
+            [
+                (header::CONTENT_TYPE, mime),
+                (header::CACHE_CONTROL, cache.to_string()),
+            ],
             Body::from(file.data.into_owned()),
         )
             .into_response(),
@@ -70,5 +73,7 @@ fn asset(path: &str) -> Option<Response> {
 }
 
 fn mime_from(path: &str) -> String {
-    mime_guess::from_path(path).first_or_octet_stream().to_string()
+    mime_guess::from_path(path)
+        .first_or_octet_stream()
+        .to_string()
 }

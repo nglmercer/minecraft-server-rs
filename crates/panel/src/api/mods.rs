@@ -47,24 +47,42 @@ fn loader_for(core: &str) -> ApiResult<Loader> {
             directory: "plugins",
             project_type: "plugin",
         },
-        "velocity" => Loader { names: &["velocity"], directory: "plugins", project_type: "plugin" },
+        "velocity" => Loader {
+            names: &["velocity"],
+            directory: "plugins",
+            project_type: "plugin",
+        },
         "waterfall" => Loader {
             names: &["waterfall", "bungeecord"],
             directory: "plugins",
             project_type: "plugin",
         },
-        "fabric" => Loader { names: &["fabric"], directory: "mods", project_type: "mod" },
-        "forge" => Loader { names: &["forge"], directory: "mods", project_type: "mod" },
+        "fabric" => Loader {
+            names: &["fabric"],
+            directory: "mods",
+            project_type: "mod",
+        },
+        "forge" => Loader {
+            names: &["forge"],
+            directory: "mods",
+            project_type: "mod",
+        },
         // Hybrids load Forge mods and Bukkit plugins; mods are the common case.
-        "mohist" | "arclight" => {
-            Loader { names: &["forge"], directory: "mods", project_type: "mod" }
-        }
+        "mohist" | "arclight" => Loader {
+            names: &["forge"],
+            directory: "mods",
+            project_type: "mod",
+        },
         "vanilla" => {
             return Err(ApiError::BadRequest(
                 "a vanilla server cannot load plugins or mods; use Paper or Fabric".into(),
             ))
         }
-        other => return Err(ApiError::BadRequest(format!("unknown server flavour {other}"))),
+        other => {
+            return Err(ApiError::BadRequest(format!(
+                "unknown server flavour {other}"
+            )))
+        }
     })
 }
 
@@ -251,7 +269,10 @@ async fn install(
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("modrinth versions: {e}")))?;
 
     if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err(ApiError::NotFound(format!("modrinth project {}", body.project)));
+        return Err(ApiError::NotFound(format!(
+            "modrinth project {}",
+            body.project
+        )));
     }
 
     let mut versions: Vec<Version> = response
@@ -303,8 +324,12 @@ async fn install(
     let mut out = tokio::fs::File::create(&target)
         .await
         .map_err(|e| ApiError::Internal(e.into()))?;
-    out.write_all(&bytes).await.map_err(|e| ApiError::Internal(e.into()))?;
-    out.flush().await.map_err(|e| ApiError::Internal(e.into()))?;
+    out.write_all(&bytes)
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
+    out.flush()
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
 
     tracing::info!(server = %id, file = %filename, "add-on installed");
 
@@ -312,7 +337,11 @@ async fn install(
         name: version.name,
         version: version.version_number,
         path: format!("{}/{}", loader.directory, filename),
-        size: if file.size > 0 { file.size } else { bytes.len() as u64 },
+        size: if file.size > 0 {
+            file.size
+        } else {
+            bytes.len() as u64
+        },
         filename,
     }))
 }
@@ -391,7 +420,10 @@ mod tests {
     fn vanilla_is_refused_with_an_explanation() {
         let error = loader_for("vanilla").unwrap_err();
         assert!(matches!(error, ApiError::BadRequest(_)));
-        assert!(error.to_string().contains("Paper"), "should suggest an alternative");
+        assert!(
+            error.to_string().contains("Paper"),
+            "should suggest an alternative"
+        );
     }
 
     #[test]

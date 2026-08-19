@@ -57,7 +57,11 @@ async fn pump(socket: WebSocket, guardian: Arc<guardian::Guardian>) {
         "status": guardian.snapshot().await,
         "lines": guardian.console().await,
     });
-    if tx.send(Message::Text(backfill.to_string().into())).await.is_err() {
+    if tx
+        .send(Message::Text(backfill.to_string().into()))
+        .await
+        .is_err()
+    {
         return;
     }
 
@@ -65,7 +69,9 @@ async fn pump(socket: WebSocket, guardian: Arc<guardian::Guardian>) {
         loop {
             match events.recv().await {
                 Ok(event) => {
-                    let Ok(text) = serde_json::to_string(&event) else { continue };
+                    let Ok(text) = serde_json::to_string(&event) else {
+                        continue;
+                    };
                     if tx.send(Message::Text(text.into())).await.is_err() {
                         return;
                     }
@@ -73,7 +79,11 @@ async fn pump(socket: WebSocket, guardian: Arc<guardian::Guardian>) {
                 // A slow client that fell behind gets told, not disconnected.
                 Err(RecvError::Lagged(n)) => {
                     let notice = serde_json::json!({ "type": "lagged", "skipped": n });
-                    if tx.send(Message::Text(notice.to_string().into())).await.is_err() {
+                    if tx
+                        .send(Message::Text(notice.to_string().into()))
+                        .await
+                        .is_err()
+                    {
                         return;
                     }
                 }
@@ -83,7 +93,9 @@ async fn pump(socket: WebSocket, guardian: Arc<guardian::Guardian>) {
     });
 
     while let Some(Ok(message)) = rx.next().await {
-        let Message::Text(text) = message else { continue };
+        let Message::Text(text) = message else {
+            continue;
+        };
         match serde_json::from_str::<ClientMessage>(&text) {
             Ok(ClientMessage::Command { command }) => {
                 let _ = guardian.command(command.trim()).await;

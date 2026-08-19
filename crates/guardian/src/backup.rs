@@ -128,7 +128,10 @@ pub async fn create(server_dir: &Path, backup_dir: &Path, note: String) -> Resul
                 .map_err(|e| Error::io(&entry, e))?;
         }
 
-        builder.into_inner().and_then(|e| e.finish()).map_err(Error::PlainIo)?;
+        builder
+            .into_inner()
+            .and_then(|e| e.finish())
+            .map_err(Error::PlainIo)?;
         Ok(())
     })
     .await
@@ -139,7 +142,12 @@ pub async fn create(server_dir: &Path, backup_dir: &Path, note: String) -> Resul
         .map(|m| m.len())
         .unwrap_or(0);
 
-    let backup = Backup { id: id.clone(), created_at: now_rfc3339(), size, note };
+    let backup = Backup {
+        id: id.clone(),
+        created_at: now_rfc3339(),
+        size,
+        note,
+    };
     let meta = meta_path(backup_dir, &id);
     tokio::fs::write(&meta, serde_json::to_vec_pretty(&backup)?)
         .await
@@ -164,8 +172,12 @@ pub async fn list(backup_dir: &Path) -> Result<Vec<Backup>> {
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        let Ok(bytes) = tokio::fs::read(&path).await else { continue };
-        let Ok(backup) = serde_json::from_slice::<Backup>(&bytes) else { continue };
+        let Ok(bytes) = tokio::fs::read(&path).await else {
+            continue;
+        };
+        let Ok(backup) = serde_json::from_slice::<Backup>(&bytes) else {
+            continue;
+        };
         // A metadata file whose archive is gone would only produce a failing
         // restore, so it is not worth listing.
         if archive_path(backup_dir, &backup.id).exists() {
@@ -210,7 +222,9 @@ pub async fn restore(backup_dir: &Path, id: &str, server_dir: &Path) -> Result<(
                 return Err(Error::UnsafeArchiveEntry(path.display().to_string()));
             }
 
-            entry.unpack(target.join(&path)).map_err(|e| Error::io(&path, e))?;
+            entry
+                .unpack(target.join(&path))
+                .map_err(|e| Error::io(&path, e))?;
         }
         Ok(())
     })
@@ -229,7 +243,9 @@ pub async fn delete(backup_dir: &Path, id: &str) -> Result<()> {
         return Err(Error::BackupNotFound(id.to_string()));
     }
 
-    tokio::fs::remove_file(&archive).await.map_err(|e| Error::io(&archive, e))?;
+    tokio::fs::remove_file(&archive)
+        .await
+        .map_err(|e| Error::io(&archive, e))?;
     let _ = tokio::fs::remove_file(meta_path(backup_dir, id)).await;
     Ok(())
 }
@@ -256,7 +272,9 @@ fn walk(root: &Path) -> Result<Vec<PathBuf>> {
             let path = entry.path();
             // Symlinks are not followed: a link into /etc would otherwise be
             // silently archived, and restoring it would write outside the server.
-            let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
             if meta.is_symlink() {
                 continue;
             }
@@ -320,7 +338,9 @@ mod tests {
         write(&server.join("libraries/big.jar"), "redownloadable");
         write(&server.join("server.jar"), "redownloadable");
 
-        let backup = create(&server, &backups, "before upgrade".into()).await.unwrap();
+        let backup = create(&server, &backups, "before upgrade".into())
+            .await
+            .unwrap();
         assert!(backup.size > 0);
         assert_eq!(backup.note, "before upgrade");
 

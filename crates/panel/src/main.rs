@@ -33,7 +33,11 @@ use crate::store::User;
 
 /// Command line options.
 #[derive(Parser, Debug)]
-#[command(name = "mcpanel", version, about = "A fast, simple Minecraft server panel")]
+#[command(
+    name = "mcpanel",
+    version,
+    about = "A fast, simple Minecraft server panel"
+)]
 struct Args {
     /// Where servers, JDKs and panel state are stored.
     #[arg(long, default_value = "./data", env = "MCPANEL_DATA")]

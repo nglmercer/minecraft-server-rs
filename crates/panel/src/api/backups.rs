@@ -16,7 +16,11 @@ use crate::state::AppState;
 use crate::tickets::Resource;
 
 /// Resolve a server the caller may act on.
-async fn authorized(state: &AppState, identity: &Identity, id: &str) -> ApiResult<std::path::PathBuf> {
+async fn authorized(
+    state: &AppState,
+    identity: &Identity,
+    id: &str,
+) -> ApiResult<std::path::PathBuf> {
     if !identity.may_access(id) {
         return Err(ApiError::Forbidden);
     }
@@ -126,7 +130,11 @@ async fn download(
         .redeem(&query.ticket)
         .ok_or(ApiError::Unauthorized)?;
 
-    let Resource::Backup { server, backup: granted_backup } = granted else {
+    let Resource::Backup {
+        server,
+        backup: granted_backup,
+    } = granted
+    else {
         return Err(ApiError::Unauthorized);
     };
     if server != id || granted_backup != backup {

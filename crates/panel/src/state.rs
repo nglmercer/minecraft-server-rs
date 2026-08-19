@@ -8,8 +8,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::auth::Sessions;
-use crate::metrics::Metrics;
 use crate::error::ApiError;
+use crate::metrics::Metrics;
 use crate::store::{ServerRecord, Store};
 use crate::tickets::Tickets;
 
@@ -78,7 +78,10 @@ impl AppState {
     /// Register a guardian for a newly created server.
     pub async fn insert_guardian(&self, record: &ServerRecord) -> Arc<Guardian> {
         let guardian = spawn_guardian(record, &self.data_dir);
-        self.guardians.write().await.insert(record.id.clone(), guardian.clone());
+        self.guardians
+            .write()
+            .await
+            .insert(record.id.clone(), guardian.clone());
         guardian
     }
 
