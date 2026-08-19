@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "preact/hooks";
 import { api } from "../api";
 import { useT } from "../i18n";
+import { MenuButton, useMenu } from "./Menu";
 import { useDialogs } from "./Modal";
 import { useToast } from "./Toast";
-import { Actions, Banner, Button, Empty, Input, formatBytes } from "./ui";
+import { Banner, Button, Empty, Input, formatBytes } from "./ui";
 import type { Installed, Project, Server } from "../types";
 
 /** Flavours that cannot load anything, so the tab explains itself instead. */
@@ -16,6 +17,7 @@ export function Mods({ server }: { server: Server }) {
   const t = useT();
   const dialogs = useDialogs();
   const toast = useToast();
+  const menu = useMenu();
 
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Project[]>([]);
@@ -183,20 +185,45 @@ export function Mods({ server }: { server: Server }) {
           <table class="w-full text-sm">
             <tbody class="divide-y divide-ink-700">
               {installed.map((item) => (
-                <tr key={item.path} class="group hover:bg-ink-800">
-                  <td class="px-4 py-2.5 font-mono text-sm">{item.filename}</td>
-                  <td class="px-4 py-2.5 text-right font-mono text-xs text-fg-muted">
+                <tr
+                  key={item.path}
+                  onContextMenu={(event) =>
+                    menu.open(
+                      event as unknown as MouseEvent,
+                      [{ label: t("common.delete"), danger: true, onSelect: () => remove(item) }],
+                      item.filename,
+                    )
+                  }
+                  class="select-none hover:bg-ink-800 [-webkit-touch-callout:none]"
+                >
+                  <td class="px-4 py-2.5">
+                    <p class="break-all font-mono text-sm">{item.filename}</p>
+                    <p class="font-mono text-xs text-fg-muted sm:hidden">
+                      {formatBytes(item.size)}
+                    </p>
+                  </td>
+                  <td class="hidden px-4 py-2.5 text-right font-mono text-xs text-fg-muted sm:table-cell">
                     {formatBytes(item.size)}
                   </td>
-                  <td class="px-4 py-2.5">
-                    <Actions>
-                      <button
-                        class="text-xs text-fg-muted opacity-0 transition hover:text-red-400 group-hover:opacity-100 focus:opacity-100"
-                        onClick={() => remove(item)}
-                      >
-                        {t("common.delete")}
-                      </button>
-                    </Actions>
+                  <td class="py-2.5 pr-2">
+                    <div class="flex justify-end">
+                      <MenuButton
+                        label={t("files.actionsFor", { name: item.filename })}
+                        onOpen={(event) =>
+                          menu.open(
+                            event,
+                            [
+                              {
+                                label: t("common.delete"),
+                                danger: true,
+                                onSelect: () => remove(item),
+                              },
+                            ],
+                            item.filename,
+                          )
+                        }
+                      />
+                    </div>
                   </td>
                 </tr>
               ))}

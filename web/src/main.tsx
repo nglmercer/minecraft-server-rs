@@ -1,5 +1,6 @@
 import { render } from "preact";
 import { App } from "./app";
+import { MenuProvider } from "./components/Menu";
 import { DialogProvider } from "./components/Modal";
 import { ToastProvider } from "./components/Toast";
 import { I18nProvider } from "./i18n";
@@ -12,7 +13,9 @@ if (root) {
     <I18nProvider>
       <ToastProvider>
         <DialogProvider>
-          <App />
+          <MenuProvider>
+            <App />
+          </MenuProvider>
         </DialogProvider>
       </ToastProvider>
     </I18nProvider>,

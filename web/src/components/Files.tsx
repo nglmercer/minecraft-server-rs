@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { api } from "../api";
 import { useT } from "../i18n";
+import { MenuButton, useMenu, type MenuItem } from "./Menu";
 import { useDialogs } from "./Modal";
 import { useToast } from "./Toast";
 import { Actions, Button, Empty, formatBytes } from "./ui";
@@ -16,6 +17,7 @@ export function Files({ serverId }: { serverId: string }) {
   const t = useT();
   const dialogs = useDialogs();
   const toast = useToast();
+  const menu = useMenu();
 
   const [path, setPath] = useState("");
   const [entries, setEntries] = useState<FileEntry[]>([]);
@@ -184,6 +186,28 @@ export function Files({ serverId }: { serverId: string }) {
     }
   }
 
+  /** The actions for one entry, shared by the trigger button and long-press. */
+  function actionsFor(entry: FileEntry): MenuItem[] {
+    const items: MenuItem[] = [
+      { label: entry.directory ? t("files.openFolder") : t("files.edit"), onSelect: () => open(entry) },
+    ];
+
+    if (!entry.directory) {
+      if (EXTRACTABLE.test(entry.name)) {
+        items.push({ label: t("common.extract"), onSelect: () => extract(entry) });
+      }
+      items.push({ label: t("common.download"), href: api.downloadUrl(serverId, entry.path) });
+    }
+
+    items.push({ label: t("common.rename"), onSelect: () => rename(entry) });
+    items.push({ label: t("common.delete"), danger: true, onSelect: () => remove(entry) });
+
+    return items;
+  }
+
+  const openMenu = (event: MouseEvent, entry: FileEntry) =>
+    menu.open(event, actionsFor(entry), entry.name);
+
   if (editing) {
     return (
       <div class="flex min-h-0 flex-1 flex-col gap-3">
@@ -266,8 +290,12 @@ export function Files({ serverId }: { serverId: string }) {
           <thead class="sticky top-0 bg-ink-850 text-left text-xs uppercase tracking-wider text-fg-muted">
             <tr class="border-b border-ink-700">
               <th class="px-4 py-2.5 font-medium">{t("common.name")}</th>
-              <th class="px-4 py-2.5 text-right font-medium">{t("files.size")}</th>
-              <th class="px-4 py-2.5 text-right font-medium">{t("files.modified")}</th>
+              <th class="hidden px-4 py-2.5 text-right font-medium sm:table-cell">
+                {t("files.size")}
+              </th>
+              <th class="hidden px-4 py-2.5 text-right font-medium md:table-cell">
+                {t("files.modified")}
+              </th>
               <th class="px-4 py-2.5" />
             </tr>
           </thead>
@@ -275,7 +303,7 @@ export function Files({ serverId }: { serverId: string }) {
             {path && (
               <tr class="hover:bg-ink-800">
                 <td colspan={4} class="px-4 py-2.5">
-                  <button class="font-mono text-fg-muted hover:text-fg" onClick={() => load(parent)}>
+                  <button class="py-1 font-mono text-fg-muted hover:text-fg" onClick={() => load(parent)}>
                     ../
                   </button>
                 </td>
@@ -283,53 +311,38 @@ export function Files({ serverId }: { serverId: string }) {
             )}
 
             {entries.map((entry) => (
-              <tr key={entry.path} class="group hover:bg-ink-800">
+              <tr
+                key={entry.path}
+                // Right-click on desktop, long-press on touch: both arrive here.
+                onContextMenu={(event) => openMenu(event as unknown as MouseEvent, entry)}
+                class="group select-none hover:bg-ink-800 [-webkit-touch-callout:none]"
+              >
                 <td class="px-4 py-2.5">
                   <button
-                    class="flex items-center gap-2 text-left font-mono hover:text-accent"
+                    class="flex w-full items-center gap-2 text-left font-mono hover:text-accent"
                     onClick={() => open(entry)}
                   >
-                    <span class="text-fg-muted">{entry.directory ? "📁" : "📄"}</span>
-                    {entry.name}
+                    <span class="shrink-0 text-fg-muted">{entry.directory ? "📁" : "📄"}</span>
+                    <span class="truncate">{entry.name}</span>
                   </button>
+                  {/* The size lives here on narrow screens, where its column is dropped. */}
+                  <span class="ml-6 font-mono text-xs text-fg-muted sm:hidden">
+                    {entry.directory ? "" : formatBytes(entry.size)}
+                    {busy === entry.path && ` · ${t("common.extracting")}`}
+                  </span>
                 </td>
-                <td class="px-4 py-2.5 text-right font-mono text-xs text-fg-muted">
+                <td class="hidden px-4 py-2.5 text-right font-mono text-xs text-fg-muted sm:table-cell">
                   {entry.directory ? "—" : formatBytes(entry.size)}
                 </td>
-                <td class="whitespace-nowrap px-4 py-2.5 text-right text-xs text-fg-muted">
+                <td class="hidden whitespace-nowrap px-4 py-2.5 text-right text-xs text-fg-muted md:table-cell">
                   {entry.modified ? new Date(entry.modified * 1000).toLocaleString() : "—"}
                 </td>
-                <td class="px-4 py-2.5">
-                  <div class="flex items-center justify-end gap-2 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
-                    {!entry.directory && EXTRACTABLE.test(entry.name) && (
-                      <button
-                        class="text-xs text-fg-muted hover:text-accent"
-                        disabled={busy === entry.path}
-                        onClick={() => extract(entry)}
-                      >
-                        {busy === entry.path ? t("common.extracting") : t("common.extract")}
-                      </button>
-                    )}
-                    {!entry.directory && (
-                      <a
-                        href={api.downloadUrl(serverId, entry.path)}
-                        class="text-xs text-fg-muted hover:text-fg"
-                      >
-                        {t("common.download")}
-                      </a>
-                    )}
-                    <button
-                      class="text-xs text-fg-muted hover:text-fg"
-                      onClick={() => rename(entry)}
-                    >
-                      {t("common.rename")}
-                    </button>
-                    <button
-                      class="text-xs text-fg-muted hover:text-red-400"
-                      onClick={() => remove(entry)}
-                    >
-                      {t("common.delete")}
-                    </button>
+                <td class="py-2.5 pr-2">
+                  <div class="flex justify-end">
+                    <MenuButton
+                      label={t("files.actionsFor", { name: entry.name })}
+                      onOpen={(event) => openMenu(event, entry)}
+                    />
                   </div>
                 </td>
               </tr>

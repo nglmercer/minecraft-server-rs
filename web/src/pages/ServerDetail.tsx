@@ -4,7 +4,7 @@ import { Backups } from "../components/Backups";
 import { Console } from "../components/Console";
 import { Files } from "../components/Files";
 import { Mods } from "../components/Mods";
-import { Actions, Banner, Button, Card, Field, Input, Select, StatusPill, formatUptime } from "../components/ui";
+import { Banner, Button, Card, Field, Input, Select, StatusPill, formatUptime } from "../components/ui";
 import { useDialogs } from "../components/Modal";
 import { useToast } from "../components/Toast";
 import { useT } from "../i18n";
@@ -74,7 +74,7 @@ export function ServerDetail({
   const running = server.status !== "offline" && server.status !== "crashed";
 
   return (
-    <div class="mx-auto flex h-full w-full max-w-6xl flex-col gap-5 px-6 py-6">
+    <div class="mx-auto flex h-full w-full max-w-6xl flex-col gap-5 px-4 py-6 sm:px-6">
       <header class="flex flex-wrap items-center justify-between gap-4">
         <div class="flex items-center gap-3">
           <Button variant="ghost" onClick={onBack}>
@@ -105,9 +105,9 @@ export function ServerDetail({
           </div>
         </div>
 
-        <div class="flex items-center gap-3">
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
           <StatusPill status={server.status} />
-          <Actions>
+          <div class="flex flex-wrap items-center gap-2">
             <Button variant="primary" disabled={running} onClick={() => power("start")}>
               {t("dashboard.start")}
             </Button>
@@ -121,7 +121,7 @@ export function ServerDetail({
             <Button variant="ghost" disabled={!running} onClick={() => power("kill")}>
               {t("dashboard.kill")}
             </Button>
-          </Actions>
+          </div>
         </div>
       </header>
 
@@ -129,12 +129,12 @@ export function ServerDetail({
 
       {server.status === "preparing" && <Banner kind="info">{t("server.preparing")}</Banner>}
 
-      <nav class="flex gap-1 border-b border-ink-700">
+      <nav class="-mx-4 flex gap-1 overflow-x-auto border-b border-ink-700 px-4 sm:mx-0 sm:px-0">
         {(["console", "files", "plugins", "backups", "settings"] as Tab[]).map((name) => (
           <button
             key={name}
             onClick={() => setTab(name)}
-            class={`-mb-px border-b-2 px-4 py-2 text-sm font-medium transition-colors ${
+            class={`-mb-px shrink-0 whitespace-nowrap border-b-2 px-4 py-2 text-sm font-medium transition-colors ${
               tab === name
                 ? "border-accent text-fg"
                 : "border-transparent text-fg-muted hover:text-fg"

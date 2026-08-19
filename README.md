@@ -162,6 +162,17 @@ every result will actually load. Bukkit-family servers install to `plugins/`,
 Fabric and Forge to `mods/`, and vanilla is refused with a suggestion rather
 than a silent no-op.
 
+## Mobile
+
+Row actions live in a contextual menu rather than on hover, because a hover
+target does not exist on a touchscreen. It opens three ways: the always-visible
+`⋯` button, a right-click, or a long-press — the last two arrive as the same
+`contextmenu` event, which is suppressed so the browser's own menu does not
+appear instead.
+
+Below 640px the menu becomes a bottom sheet with larger hit targets, tables drop
+their less important columns rather than scrolling sideways, and toolbars wrap.
+
 ## Internationalisation
 
 The UI ships in English and Spanish, picked from a stored choice, then the

@@ -24,9 +24,9 @@ export function StatusPill({ status }: { status: Status }) {
   );
 }
 
-/** A right-aligned row of actions, used in table rows and card headers. */
+/** A right-aligned row of actions, used in toolbars and card headers. */
 export function Actions({ children }: { children: ComponentChildren }) {
-  return <div class="flex items-center justify-end gap-2">{children}</div>;
+  return <div class="flex flex-wrap items-center justify-end gap-2">{children}</div>;
 }
 
 /** Placeholder for a list or table with nothing in it. */

@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useState } from "preact/hooks";
 import { api } from "../api";
 import { useT } from "../i18n";
+import { MenuButton, useMenu, type MenuItem } from "./Menu";
 import { useDialogs } from "./Modal";
 import { useToast } from "./Toast";
-import { Actions, Button, Empty, Input, formatBytes } from "./ui";
+import { Button, Empty, Input, formatBytes } from "./ui";
 import type { Backup, Status } from "../types";
 
 export function Backups({ serverId, status }: { serverId: string; status: Status }) {
   const t = useT();
   const dialogs = useDialogs();
   const toast = useToast();
+  const menu = useMenu();
 
   const [backups, setBackups] = useState<Backup[]>([]);
   const [note, setNote] = useState("");
@@ -89,6 +91,19 @@ export function Backups({ serverId, status }: { serverId: string; status: Status
     }
   }
 
+  function actionsFor(backup: Backup): MenuItem[] {
+    return [
+      { label: t("common.download"), href: api.backupUrl(serverId, backup.id) },
+      {
+        label: t("common.restore"),
+        onSelect: () => restore(backup),
+        // Unpacking a world under a live JVM corrupts it.
+        disabled: running || busy === backup.id,
+      },
+      { label: t("common.delete"), danger: true, onSelect: () => remove(backup) },
+    ];
+  }
+
   return (
     <div class="min-h-0 flex-1 space-y-4 overflow-y-auto pb-6">
       <form onSubmit={create} class="flex flex-wrap items-end gap-3">
@@ -113,42 +128,35 @@ export function Backups({ serverId, status }: { serverId: string; status: Status
         <table class="w-full text-sm">
           <tbody class="divide-y divide-ink-700">
             {backups.map((backup) => (
-              <tr key={backup.id} class="hover:bg-ink-800">
+              <tr
+                key={backup.id}
+                onContextMenu={(event) =>
+                  menu.open(event as unknown as MouseEvent, actionsFor(backup), backup.id)
+                }
+                class="select-none hover:bg-ink-800 [-webkit-touch-callout:none]"
+              >
                 <td class="px-4 py-3">
                   <p class="font-mono text-sm">{backup.id}</p>
                   {backup.note && <p class="mt-0.5 text-xs text-fg-muted">{backup.note}</p>}
+                  <p class="mt-0.5 font-mono text-xs text-fg-muted sm:hidden">
+                    {formatBytes(backup.size)} · {new Date(backup.created_at).toLocaleString()}
+                  </p>
                 </td>
-                <td class="px-4 py-3 text-right font-mono text-xs text-fg-muted">
+                <td class="hidden px-4 py-3 text-right font-mono text-xs text-fg-muted sm:table-cell">
                   {formatBytes(backup.size)}
                 </td>
-                <td class="whitespace-nowrap px-4 py-3 text-right text-xs text-fg-muted">
+                <td class="hidden whitespace-nowrap px-4 py-3 text-right text-xs text-fg-muted md:table-cell">
                   {new Date(backup.created_at).toLocaleString()}
                 </td>
-                <td class="px-4 py-3">
-                  <Actions>
-                    <a
-                      href={api.backupUrl(serverId, backup.id)}
-                      class="rounded-lg px-2.5 py-1.5 text-xs text-fg-muted hover:bg-ink-700 hover:text-fg"
-                    >
-                      {t("common.download")}
-                    </a>
-                    <Button
-                      class="!px-2.5 !py-1.5 !text-xs"
-                      disabled={running || busy === backup.id}
-                      title={running ? t("backups.mustStop") : undefined}
-                      onClick={() => restore(backup)}
-                    >
-                      {t("common.restore")}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      class="!px-2.5 !py-1.5 !text-xs"
-                      disabled={busy === backup.id}
-                      onClick={() => remove(backup)}
-                    >
-                      {t("common.delete")}
-                    </Button>
-                  </Actions>
+                <td class="py-3 pr-2">
+                  <div class="flex justify-end">
+                    <MenuButton
+                      label={t("files.actionsFor", { name: backup.id })}
+                      onOpen={(event) =>
+                        menu.open(event, actionsFor(backup), backup.id)
+                      }
+                    />
+                  </div>
                 </td>
               </tr>
             ))}

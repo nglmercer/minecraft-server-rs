@@ -1,6 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import { api } from "../api";
-import { Actions, Button, Card, Field, Input, Select, StatusPill, formatUptime } from "../components/ui";
+import { Button, Card, Field, Input, Select, StatusPill, formatUptime } from "../components/ui";
 import { useToast } from "../components/Toast";
 import { useT } from "../i18n";
 import type { Server, SystemStats, User } from "../types";
@@ -46,7 +46,7 @@ export function Dashboard({
   }
 
   return (
-    <div class="mx-auto w-full max-w-6xl space-y-6 px-6 py-8">
+    <div class="mx-auto w-full max-w-6xl space-y-6 px-4 py-8 sm:px-6">
       <header class="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 class="text-2xl font-semibold">{t("dashboard.title")}</h1>
@@ -88,7 +88,7 @@ export function Dashboard({
         {servers.map((server) => (
           <article
             key={server.id}
-            class="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-ink-700 bg-ink-850 px-5 py-4"
+            class="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-ink-700 bg-ink-850 px-4 py-4 sm:px-5"
           >
             <div class="min-w-0 space-y-1">
               <button
@@ -113,9 +113,9 @@ export function Dashboard({
               </p>
             </div>
 
-            <div class="flex items-center gap-3">
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
               <StatusPill status={server.status} />
-              <Actions>
+              <div class="flex flex-wrap items-center gap-2">
                 <Button
                   variant="primary"
                   disabled={server.status !== "offline" && server.status !== "crashed"}
@@ -139,7 +139,7 @@ export function Dashboard({
                 <Button variant="ghost" onClick={() => onOpen(server.id)}>
                   {t("dashboard.manage")}
                 </Button>
-              </Actions>
+              </div>
             </div>
           </article>
         ))}

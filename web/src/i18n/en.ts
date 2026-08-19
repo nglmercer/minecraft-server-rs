@@ -120,6 +120,9 @@ export const en = {
   },
 
   files: {
+    edit: "Edit",
+    openFolder: "Open",
+    actionsFor: "Actions for {name}",
     newFolder: "New folder",
     newFolderTitle: "New folder",
     newFolderLabel: "Folder name",

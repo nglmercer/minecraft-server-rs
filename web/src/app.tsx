@@ -105,7 +105,7 @@ export function App() {
 
   return (
     <div class="flex h-full flex-col">
-      <nav class="flex items-center justify-between border-b border-ink-700 bg-ink-850 px-6 py-3">
+      <nav class="flex flex-wrap items-center justify-between gap-x-5 gap-y-2 border-b border-ink-700 bg-ink-850 px-4 py-3 sm:px-6">
         <div class="flex items-center gap-5">
           <button
             class="flex items-center gap-2.5"
@@ -114,7 +114,7 @@ export function App() {
             <span class="grid size-7 place-items-center rounded-md bg-accent text-sm font-bold text-ink-950">
               M
             </span>
-            <span class="text-sm font-semibold">{t("nav.title")}</span>
+            <span class="whitespace-nowrap text-sm font-semibold">{t("nav.title")}</span>
           </button>
 
           {user.admin && (
@@ -129,8 +129,8 @@ export function App() {
           )}
         </div>
 
-        <div class="flex items-center gap-3 text-sm">
-          <span class="text-fg-muted">
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
+          <span class="whitespace-nowrap text-fg-muted">
             {user.username}
             {user.admin && <span class="ml-1.5 text-xs text-accent">{t("nav.admin")}</span>}
           </span>

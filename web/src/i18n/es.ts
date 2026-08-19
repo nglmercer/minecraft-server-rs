@@ -124,6 +124,9 @@ export const es: Dictionary = {
   },
 
   files: {
+    edit: "Editar",
+    openFolder: "Abrir",
+    actionsFor: "Acciones para {name}",
     newFolder: "Nueva carpeta",
     newFolderTitle: "Nueva carpeta",
     newFolderLabel: "Nombre de la carpeta",

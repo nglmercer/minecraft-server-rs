@@ -1,6 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import { api } from "../api";
-import { Actions, Button, Card, Field, Input } from "../components/ui";
+import { Button, Card, Field, Input } from "../components/ui";
 import { useDialogs } from "../components/Modal";
 import { useToast } from "../components/Toast";
 import { useT } from "../i18n";
@@ -95,7 +95,7 @@ export function Users({ currentUser }: { currentUser: string }) {
   }
 
   return (
-    <div class="mx-auto w-full max-w-4xl space-y-6 px-6 py-8">
+    <div class="mx-auto w-full max-w-4xl space-y-6 px-4 py-8 sm:px-6">
       <header class="flex items-end justify-between gap-4">
         <div>
           <h1 class="text-2xl font-semibold">{t("users.title")}</h1>
@@ -137,7 +137,7 @@ export function Users({ currentUser }: { currentUser: string }) {
                 </p>
               </div>
 
-              <Actions>
+              <div class="flex flex-wrap items-center gap-2">
                 <Button class="!px-2.5 !py-1.5 !text-xs" onClick={() => resetPassword(user)}>
                   {t("users.setPassword")}
                 </Button>
@@ -155,7 +155,7 @@ export function Users({ currentUser }: { currentUser: string }) {
                 >
                   {t("common.delete")}
                 </Button>
-              </Actions>
+              </div>
             </div>
 
             {!user.admin && servers.length > 0 && (
