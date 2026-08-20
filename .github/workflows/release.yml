@@ -1,0 +1,171 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # So the whole thing can be exercised without cutting a tag first.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and publish (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Every target should report, rather than the first failure hiding the rest.
+      fail-fast: false
+      matrix:
+        include:
+          # Built on 22.04 rather than latest so the binary links against an
+          # older glibc: one built on 24.04 refuses to start on Debian 12.
+          - name: linux-x86_64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+
+          # Statically linked, so it runs on Alpine and on distros older than
+          # whatever the glibc build was made against.
+          - name: linux-x86_64-static
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+
+          - name: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+
+          - name: macos-x86_64
+            os: macos-latest
+            target: x86_64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build the frontend
+        working-directory: web
+        # Must precede cargo: rust-embed bakes web/dist into the binary at
+        # compile time, so building it afterwards would ship an empty UI.
+        run: |
+          npm ci
+          npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install the musl toolchain
+        if: endsWith(matrix.target, '-musl')
+        # ring compiles C, and needs a musl-targeting compiler to do it.
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }} -p panel --bin mcpanel
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          version="${{ inputs.tag || github.ref_name }}"
+          staging="mcpanel-${version}-${{ matrix.name }}"
+          mkdir "$staging"
+          cp "target/${{ matrix.target }}/release/mcpanel" "$staging/"
+          cp README.md LICENSE "$staging/"
+          tar czf "${staging}.tar.gz" "$staging"
+          echo "ASSET=${staging}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          version="${{ inputs.tag || github.ref_name }}"
+          staging="mcpanel-${version}-${{ matrix.name }}"
+          mkdir "$staging"
+          cp "target/${{ matrix.target }}/release/mcpanel.exe" "$staging/"
+          cp README.md LICENSE "$staging/"
+          7z a "${staging}.zip" "$staging"
+          echo "ASSET=${staging}.zip" >> "$GITHUB_ENV"
+
+      - name: Check the binary runs and embeds the frontend
+        # Native targets only: a macos-x86_64 binary cannot execute on an arm
+        # runner, and there is nothing to learn from trying.
+        if: matrix.name != 'macos-x86_64'
+        shell: bash
+        run: |
+          binary="target/${{ matrix.target }}/release/mcpanel"
+          [ "${{ runner.os }}" = "Windows" ] && binary="${binary}.exe"
+
+          "$binary" --data-dir ./release-check --bind 127.0.0.1:8099 &
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8099/ >/dev/null && break
+            sleep 1
+          done
+
+          # A release that quietly ships the "frontend not built" page would
+          # otherwise look like a perfectly good release.
+          curl -s http://127.0.0.1:8099/ | grep -q 'assets/index-' \
+            || { echo "::error::${{ matrix.name }} is not serving the embedded frontend"; exit 1; }
+          echo "${{ matrix.name }} runs and serves the embedded frontend"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    # Every target must have built. A release missing a platform is worse than
+    # one that arrives a few minutes later.
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: assets
+        run: sha256sum * | tee SHA256SUMS
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${{ inputs.tag || github.ref_name }}"
+
+          # --clobber so re-running a failed publish replaces the assets rather
+          # than erroring on ones that already uploaded.
+          gh release create "$version" \
+            --title "$version" \
+            --generate-notes \
+            --verify-tag \
+            assets/* \
+            || gh release upload "$version" assets/* --clobber

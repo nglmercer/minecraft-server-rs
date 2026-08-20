@@ -31,12 +31,19 @@ node daemon.
 
 ## Quick start
 
+Download a binary from [Releases](https://github.com/nglmercer/minecraft-server-rs/releases)
+— it is self-contained, with the web UI inside it — or build from source:
+
 ```sh
 git clone --recurse-submodules https://github.com/nglmercer/minecraft-server-rs
 cd minecraft-server-rs
 ./build.sh
 ./target/release/mcpanel --data-dir ./data --bind 0.0.0.0:8080
 ```
+
+Two Linux builds are published: `linux-x86_64` links against glibc, and
+`linux-x86_64-static` is statically linked, for Alpine or any distro older than
+the one the glibc build was made on.
 
 The first run prints a generated `admin` password. It is shown once.
 
@@ -312,6 +319,18 @@ Not built yet:
 4. **Console log persistence.** The buffer is in memory, so it resets when the
    panel restarts. The server's own `logs/` directory is untouched and remains
    the durable record.
+
+## Releasing
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+That builds for Linux (glibc and static), Windows and both macOS architectures,
+starts each native binary to confirm it serves the embedded frontend, and
+publishes them to a GitHub Release with checksums and generated notes. A target
+that fails to build stops the release rather than publishing a partial one.
 
 ## Licence
 
