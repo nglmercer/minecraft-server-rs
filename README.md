@@ -25,7 +25,7 @@ node daemon.
                     ▼
             ┌───────────────┐
             │     panel     │  REST + WebSocket API, auth, files,
-            │   (mcpanel)   │  and the embedded web UI
+            │   (mcpanel)   │  Playit IPC and the embedded web UI
             └───────────────┘
 ```
 
@@ -53,6 +53,7 @@ The first run prints a generated `admin` password. It is shown once.
 | --------------------------- | ----------------------------------------------------- |
 | `crates/guardian`           | The lifecycle library. No HTTP, no panel concepts.    |
 | `crates/panel`              | The `mcpanel` binary: API, auth, embedded frontend.   |
+| `crates/playit-integration` | Optional Playit daemon IPC adapter.                  |
 | `web`                       | Vite + Preact + TypeScript + Tailwind v4 frontend.    |
 | `vendor/java-path-rs`       | Submodule: Java discovery and provisioning.           |
 | `vendor/minecraft-core-rs`  | Submodule: server artifact resolution and download.   |
@@ -104,6 +105,9 @@ handshake.
 | `POST`              | `/auth/logout`                         | Invalidate the current token       |
 | `GET`               | `/auth/me`                             | The current account                |
 | `POST`              | `/auth/password`                       | Change your password               |
+| `GET`               | `/playit/status`                       | Inspect local Playit daemon state  |
+| `GET`               | `/playit/account`                      | Inspect Playit account state       |
+| `POST`              | `/playit/claim`                       | Start the browser-based claim flow (admin) |
 | `GET` `POST`        | `/servers`                             | List / create                      |
 | `GET` `PATCH` `DELETE` | `/servers/{id}`                     | Inspect / reconfigure / remove     |
 | `POST`              | `/servers/{id}/power`                  | `start`, `stop`, `restart`, `kill` |

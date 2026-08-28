@@ -1,0 +1,15 @@
+[package]
+name = "playit-integration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Playit IPC adapter for the Minecraft server panel"
+
+[dependencies]
+playit-ipc.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

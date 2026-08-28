@@ -6,6 +6,7 @@ pub mod catalog;
 pub mod console;
 pub mod files;
 pub mod mods;
+pub mod playit;
 pub mod servers;
 pub mod users;
 
@@ -32,6 +33,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .nest("/servers", per_server)
         .merge(users::router())
         .merge(catalog::router())
+        .merge(playit::router())
         // Without this, a mistyped API path falls through to the SPA and
         // answers 200 with HTML, which reads as success to any client.
         .fallback(|| async { ApiError::NotFound("endpoint".into()) })

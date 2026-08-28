@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 guardian = { path = "../guardian" }
+playit-integration = { path = "../playit-integration" }
 java-path.workspace = true
 minecraft-core.workspace = true
 tokio.workspace = true

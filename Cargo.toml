@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/guardian", "crates/panel"]
+members = ["crates/guardian", "crates/panel", "crates/playit-integration"]
 exclude = ["vendor"]
 
 [workspace.package]
@@ -19,6 +19,10 @@ thiserror = "2"
 anyhow = "1"
 tracing = "0.1"
 async-trait = "0.1"
+playit-ipc = {
+    git = "https://github.com/nglmercer/playit-agent",
+    rev = "5fa9a31ff042ac0fb12bfcb9bb4f54a3bcbd62cd"
+}
 
 [profile.release]
 lto = "thin"

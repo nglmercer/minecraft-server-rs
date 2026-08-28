@@ -28,6 +28,10 @@ pub enum ApiError {
     #[error("{0}")]
     Guardian(#[from] guardian::Error),
 
+    /// The optional Playit daemon rejected or could not complete the operation.
+    #[error("{0}")]
+    Playit(#[from] playit_integration::PlayitError),
+
     /// Anything unexpected.
     #[error("{0}")]
     Internal(#[from] anyhow::Error),
@@ -42,6 +46,7 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
             // An invalid transition is the client's fault, not the server's.
             ApiError::Guardian(guardian::Error::InvalidTransition { .. }) => StatusCode::CONFLICT,
+            ApiError::Playit(_) => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Guardian(_) | ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 

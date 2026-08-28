@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use guardian::Guardian;
+use playit_integration::PlayitManager;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -27,6 +28,8 @@ pub struct AppState {
     pub metrics: Metrics,
     /// Short-lived grants for browser-driven downloads.
     pub tickets: Tickets,
+    /// Adapter for the optional local Playit daemon.
+    pub playit: Arc<PlayitManager>,
 }
 
 impl AppState {
@@ -62,6 +65,7 @@ impl AppState {
             data_dir,
             metrics: Metrics::default(),
             tickets: Tickets::default(),
+            playit: Arc::new(PlayitManager::new()),
         }))
     }
 
