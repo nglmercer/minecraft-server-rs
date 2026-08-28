@@ -188,7 +188,31 @@ impl PlayitManager {
         })
     }
 
-    /// Create the default TCP tunnel for one Minecraft server.
+    /// Create a semantic Minecraft Java tunnel for a local server.
+    pub async fn create_minecraft_java_tunnel(
+        &self,
+        local_port: u16,
+        local_address: Option<String>,
+        name: Option<String>,
+    ) -> Result<TunnelCreateInfo, PlayitError> {
+        let response = self
+            .service
+            .create_minecraft_java_tunnel(local_port, local_address, name)
+            .await?;
+
+        if response.tunnel_id.trim().is_empty() {
+            return Err(PlayitError::Protocol(
+                "tunnel creation response did not contain an id".into(),
+            ));
+        }
+
+        Ok(TunnelCreateInfo {
+            tunnel_id: response.tunnel_id,
+            message: response.message,
+        })
+    }
+
+    /// Create the default Minecraft Java tunnel for one Minecraft server.
     ///
     /// Playit returns the id immediately and may materialize the public
     /// address asynchronously. The follow-up list lets callers persist the
@@ -200,9 +224,8 @@ impl PlayitManager {
         port: u16,
     ) -> Result<PlayitTunnel, PlayitError> {
         let created = self
-            .create_tunnel(
+            .create_minecraft_java_tunnel(
                 port,
-                PlayitProtocol::Tcp,
                 Some("127.0.0.1".into()),
                 Some(format!("mcpanel:{server_id}:{server_name}")),
             )
@@ -264,6 +287,15 @@ impl PlayitService for UnavailablePlayitService {
         &self,
         _: u16,
         _: TunnelProtocol,
+        _: Option<String>,
+        _: Option<String>,
+    ) -> Result<playit_ipc::model::TunnelCreateResponse, PlayitError> {
+        Err(PlayitError::Unavailable(self.message.clone()))
+    }
+
+    async fn create_minecraft_java_tunnel(
+        &self,
+        _: u16,
         _: Option<String>,
         _: Option<String>,
     ) -> Result<playit_ipc::model::TunnelCreateResponse, PlayitError> {
@@ -419,6 +451,24 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((local_port, protocol, local_address, name));
+            Ok(TunnelCreateResponse {
+                tunnel_id: "generic-tunnel".into(),
+                message: None,
+            })
+        }
+
+        async fn create_minecraft_java_tunnel(
+            &self,
+            local_port: u16,
+            local_address: Option<String>,
+            name: Option<String>,
+        ) -> Result<TunnelCreateResponse, PlayitError> {
+            self.created.lock().unwrap().push((
+                local_port,
+                TunnelProtocol::Tcp,
+                local_address,
+                name,
+            ));
             Ok(TunnelCreateResponse {
                 tunnel_id: "tunnel-1".into(),
                 message: None,

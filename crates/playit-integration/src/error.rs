@@ -25,6 +25,15 @@ pub enum PlayitError {
 }
 
 impl PlayitError {
+    /// Return the structured service code, when the backend supplied one.
+    pub fn service_code(&self) -> Option<ServiceErrorCode> {
+        match self {
+            Self::Ipc(playit_ipc::ipc::IpcError::Service(error)) => Some(error.code.clone()),
+            Self::Runtime(error) => Some(error.as_service_error().code),
+            Self::Ipc(_) | Self::Unavailable(_) | Self::Rejected(_) | Self::Protocol(_) => None,
+        }
+    }
+
     /// Whether this error means the Playit service is currently unavailable.
     pub fn is_unavailable(&self) -> bool {
         match self {
@@ -32,6 +41,7 @@ impl PlayitError {
                 IpcError::ConnectionFailed(_) | IpcError::NotRunning | IpcError::IoError(_),
             )
             | Self::Unavailable(_) => true,
+            Self::Ipc(IpcError::Service(error)) => service_code_is_unavailable(&error.code),
             Self::Runtime(error) => runtime_error_is_unavailable(error),
             Self::Rejected(_) | Self::Protocol(_) | Self::Ipc(_) => false,
         }
@@ -41,6 +51,9 @@ impl PlayitError {
     pub fn is_unsupported(&self) -> bool {
         match self {
             Self::Ipc(IpcError::ProtocolMismatch { .. }) => true,
+            Self::Ipc(IpcError::Service(error)) => {
+                matches!(error.code, ServiceErrorCode::UnsupportedProtocol)
+            }
             Self::Runtime(error) => {
                 runtime_error_has_code(error, ServiceErrorCode::UnsupportedProtocol)
             }
@@ -51,7 +64,17 @@ impl PlayitError {
 
 fn runtime_error_is_unavailable(error: &RuntimeError) -> bool {
     matches!(error, RuntimeError::Stopped | RuntimeError::Io(_))
-        || runtime_error_has_code(error, ServiceErrorCode::ApiUnavailable)
+        || matches!(
+            error.as_service_error().code,
+            ServiceErrorCode::ApiUnavailable | ServiceErrorCode::ProvisioningUnavailable
+        )
+}
+
+fn service_code_is_unavailable(code: &ServiceErrorCode) -> bool {
+    matches!(
+        code,
+        ServiceErrorCode::ApiUnavailable | ServiceErrorCode::ProvisioningUnavailable
+    )
 }
 
 fn runtime_error_has_code(error: &RuntimeError, expected: ServiceErrorCode) -> bool {

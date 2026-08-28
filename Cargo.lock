@@ -1530,7 +1530,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 [[package]]
 name = "playit-agent-core"
 version = "1.0.10"
-source = "git+https://github.com/nglmercer/playit-agent?rev=08f9c76e075603140c39644b4fc2f6eae091a5d3#08f9c76e075603140c39644b4fc2f6eae091a5d3"
+source = "git+https://github.com/nglmercer/playit-agent?rev=42c046287d373bb548d9891d4766f3c47406aed2#42c046287d373bb548d9891d4766f3c47406aed2"
 dependencies = [
  "byteorder",
  "chrono",
@@ -1556,7 +1556,7 @@ dependencies = [
 [[package]]
 name = "playit-agent-proto"
 version = "1.3.0"
-source = "git+https://github.com/nglmercer/playit-agent?rev=08f9c76e075603140c39644b4fc2f6eae091a5d3#08f9c76e075603140c39644b4fc2f6eae091a5d3"
+source = "git+https://github.com/nglmercer/playit-agent?rev=42c046287d373bb548d9891d4766f3c47406aed2#42c046287d373bb548d9891d4766f3c47406aed2"
 dependencies = [
  "byteorder",
  "hex",
@@ -1569,7 +1569,7 @@ dependencies = [
 [[package]]
 name = "playit-api-client"
 version = "0.2.0"
-source = "git+https://github.com/nglmercer/playit-agent?rev=08f9c76e075603140c39644b4fc2f6eae091a5d3#08f9c76e075603140c39644b4fc2f6eae091a5d3"
+source = "git+https://github.com/nglmercer/playit-agent?rev=42c046287d373bb548d9891d4766f3c47406aed2#42c046287d373bb548d9891d4766f3c47406aed2"
 dependencies = [
  "byteorder",
  "chrono",
@@ -1598,7 +1598,7 @@ dependencies = [
 [[package]]
 name = "playit-ipc"
 version = "1.0.10"
-source = "git+https://github.com/nglmercer/playit-agent?rev=08f9c76e075603140c39644b4fc2f6eae091a5d3#08f9c76e075603140c39644b4fc2f6eae091a5d3"
+source = "git+https://github.com/nglmercer/playit-agent?rev=42c046287d373bb548d9891d4766f3c47406aed2#42c046287d373bb548d9891d4766f3c47406aed2"
 dependencies = [
  "dirs",
  "futures-util",
@@ -1614,7 +1614,7 @@ dependencies = [
 [[package]]
 name = "playit-runtime"
 version = "1.0.10"
-source = "git+https://github.com/nglmercer/playit-agent?rev=08f9c76e075603140c39644b4fc2f6eae091a5d3#08f9c76e075603140c39644b4fc2f6eae091a5d3"
+source = "git+https://github.com/nglmercer/playit-agent?rev=42c046287d373bb548d9891d4766f3c47406aed2#42c046287d373bb548d9891d4766f3c47406aed2"
 dependencies = [
  "hex",
  "playit-agent-core",

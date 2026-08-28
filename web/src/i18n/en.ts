@@ -107,7 +107,7 @@ export const en = {
     claimLinkUnavailable: "The claim link is unavailable.",
     openAccount: "Open Playit account",
     serverSection: "Server tunnels",
-    serverExplain: "Create a TCP tunnel to a server's local Minecraft port.",
+    serverExplain: "Create a Minecraft Java tunnel to a server's local Minecraft port.",
     server: "Server",
     chooseServer: "Choose a server",
     createServerTunnel: "Create tunnel",

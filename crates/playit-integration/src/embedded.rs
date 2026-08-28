@@ -62,6 +62,18 @@ impl PlayitService for EmbeddedPlayitService {
             .await?)
     }
 
+    async fn create_minecraft_java_tunnel(
+        &self,
+        local_port: u16,
+        local_address: Option<String>,
+        name: Option<String>,
+    ) -> Result<TunnelCreateResponse, PlayitError> {
+        Ok(self
+            .handle
+            .create_minecraft_java_tunnel(local_port, local_address, name)
+            .await?)
+    }
+
     async fn delete_tunnel(&self, tunnel_id: &str) -> Result<CommandResponse, PlayitError> {
         Ok(self.handle.delete_tunnel(tunnel_id).await?)
     }

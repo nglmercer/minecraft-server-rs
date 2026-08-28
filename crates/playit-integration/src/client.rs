@@ -34,6 +34,13 @@ pub trait PlayitService: Send + Sync {
         local_address: Option<String>,
         name: Option<String>,
     ) -> Result<TunnelCreateResponse, PlayitError>;
+    /// Create a semantic Minecraft Java tunnel.
+    async fn create_minecraft_java_tunnel(
+        &self,
+        local_port: u16,
+        local_address: Option<String>,
+        name: Option<String>,
+    ) -> Result<TunnelCreateResponse, PlayitError>;
     /// Delete a tunnel by its stable identifier.
     async fn delete_tunnel(&self, tunnel_id: &str) -> Result<CommandResponse, PlayitError>;
 }
@@ -80,6 +87,18 @@ impl PlayitService for IpcPlayitService {
         let mut client = IpcClient::connect().await?;
         Ok(client
             .create_tunnel(local_port, protocol, local_address, name)
+            .await?)
+    }
+
+    async fn create_minecraft_java_tunnel(
+        &self,
+        local_port: u16,
+        local_address: Option<String>,
+        name: Option<String>,
+    ) -> Result<TunnelCreateResponse, PlayitError> {
+        let mut client = IpcClient::connect().await?;
+        Ok(client
+            .create_minecraft_java_tunnel(local_port, local_address, name)
             .await?)
     }
 

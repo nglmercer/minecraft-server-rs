@@ -183,12 +183,7 @@ async fn attach_server_playit(
     let name = tunnel_name(body.name)?.or_else(|| Some(format!("mcpanel:{id}")));
     let created = state
         .playit
-        .create_tunnel(
-            record.config.port,
-            playit_integration::PlayitProtocol::Tcp,
-            Some("127.0.0.1".into()),
-            name,
-        )
+        .create_minecraft_java_tunnel(record.config.port, Some("127.0.0.1".into()), name)
         .await?;
 
     let binding = PlayitBinding {

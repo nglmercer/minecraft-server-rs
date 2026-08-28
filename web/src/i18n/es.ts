@@ -111,7 +111,7 @@ export const es: Dictionary = {
     claimLinkUnavailable: "El enlace de reclamación no está disponible.",
     openAccount: "Abrir cuenta de Playit",
     serverSection: "Túneles de servidores",
-    serverExplain: "Crea un túnel TCP hacia el puerto local de Minecraft del servidor.",
+    serverExplain: "Crea un túnel de Minecraft Java hacia el puerto local de Minecraft del servidor.",
     server: "Servidor",
     chooseServer: "Elige un servidor",
     createServerTunnel: "Crear túnel",

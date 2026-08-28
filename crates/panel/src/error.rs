@@ -3,6 +3,7 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use playit_integration::{PlayitError, ServiceErrorCode};
 use serde_json::json;
 
 /// Every failure an API handler can return.
@@ -51,7 +52,7 @@ impl IntoResponse for ApiError {
             ApiError::Conflict(_) => StatusCode::CONFLICT,
             // An invalid transition is the client's fault, not the server's.
             ApiError::Guardian(guardian::Error::InvalidTransition { .. }) => StatusCode::CONFLICT,
-            ApiError::Playit(_) => StatusCode::SERVICE_UNAVAILABLE,
+            ApiError::Playit(error) => playit_status(error),
             ApiError::Guardian(_) | ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
@@ -65,3 +66,25 @@ impl IntoResponse for ApiError {
 
 /// Handler result alias.
 pub type ApiResult<T> = Result<T, ApiError>;
+
+fn playit_status(error: &PlayitError) -> StatusCode {
+    match error.service_code() {
+        Some(ServiceErrorCode::InvalidTunnelRequest)
+        | Some(ServiceErrorCode::InvalidRequest)
+        | Some(ServiceErrorCode::InvalidRequestType) => StatusCode::BAD_REQUEST,
+        Some(ServiceErrorCode::PermissionDenied) => StatusCode::FORBIDDEN,
+        Some(ServiceErrorCode::TunnelNotFound) => StatusCode::NOT_FOUND,
+        Some(ServiceErrorCode::UnsupportedProtocol) => StatusCode::NOT_IMPLEMENTED,
+        Some(ServiceErrorCode::ApiRejected) => StatusCode::BAD_GATEWAY,
+        Some(ServiceErrorCode::ApiUnavailable)
+        | Some(ServiceErrorCode::ProvisioningUnavailable)
+        | Some(ServiceErrorCode::InvalidSecret)
+        | Some(ServiceErrorCode::SecretPinned)
+        | Some(ServiceErrorCode::SecretWriteFailed)
+        | Some(ServiceErrorCode::AgentDisabledOverLimit) => StatusCode::SERVICE_UNAVAILABLE,
+        Some(ServiceErrorCode::Internal) | None if error.is_unavailable() => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        Some(ServiceErrorCode::Internal) | None => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}

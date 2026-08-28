@@ -21,3 +21,4 @@ pub use model::{
     ClaimInfo, PlayitAccount, PlayitAccountStatus, PlayitConnectionState, PlayitProtocol,
     PlayitStatus, PlayitTunnel, TunnelCreateInfo,
 };
+pub use playit_ipc::model::ServiceErrorCode;
