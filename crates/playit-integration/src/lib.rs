@@ -1,18 +1,20 @@
-//! A small, mockable adapter around the Playit daemon's local IPC API.
+//! A mockable Playit integration supporting the embedded runtime and optional
+//! external daemon IPC.
 //!
 //! The panel talks to this crate rather than depending on Playit's wire models
-//! directly. The daemon remains a separate process: this crate only opens a
-//! short-lived IPC connection for each operation.
+//! or transport details directly.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 pub mod client;
+pub mod embedded;
 pub mod error;
 pub mod manager;
 pub mod model;
 
 pub use client::{IpcPlayitService, PlayitService};
+pub use embedded::EmbeddedPlayitService;
 pub use error::PlayitError;
 pub use manager::PlayitManager;
 pub use model::{

@@ -32,7 +32,7 @@ pub enum ApiError {
     #[error("{0}")]
     Guardian(#[from] guardian::Error),
 
-    /// The optional Playit daemon rejected or could not complete the operation.
+    /// The Playit service rejected or could not complete the operation.
     #[error("{0}")]
     Playit(#[from] playit_integration::PlayitError),
 

@@ -1,4 +1,4 @@
-//! Playit account, daemon and tunnel endpoints.
+//! Playit account, claim, and tunnel endpoints.
 
 use axum::extract::{Path, State};
 use axum::routing::{delete, get, post};
@@ -14,7 +14,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 use crate::store::{PlayitBinding, ServerRecord};
 
-/// The panel's view of a server's external tunnel association.
+/// The panel's view of a server's Playit tunnel association.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServerPlayitState {
@@ -22,13 +22,13 @@ pub enum ServerPlayitState {
     Disabled,
     /// The id is stored, but Playit has not materialized it in the list yet.
     Provisioning,
-    /// The daemon reports a usable tunnel with the expected destination.
+    /// The Playit service reports a usable tunnel with the expected destination.
     Connected,
     /// Playit knows the tunnel but has disabled it.
     DisabledByPlayit,
     /// Playit reports a destination different from the panel binding.
     Drifted,
-    /// The daemon could not be queried.
+    /// The Playit service could not be queried.
     Unavailable,
 }
 
@@ -39,7 +39,7 @@ pub struct ServerPlayitView {
     pub state: ServerPlayitState,
     /// The panel's persisted association, if one exists.
     pub binding: Option<PlayitBinding>,
-    /// The matching live daemon tunnel, if it is currently visible.
+    /// The matching live Playit tunnel, if it is currently visible.
     pub tunnel: Option<PlayitTunnel>,
     /// A diagnostic or provisioning note, when useful.
     pub message: Option<String>,
@@ -47,7 +47,7 @@ pub struct ServerPlayitView {
 
 /// GET `/api/playit/status`.
 ///
-/// A missing or stopped daemon is a normal deployment state, so this endpoint
+/// A missing or stopped Playit service is a normal deployment state, so this endpoint
 /// returns a usable status document instead of preventing the panel from
 /// starting or turning the status check into a generic HTTP 500.
 async fn status(State(state): State<Arc<AppState>>, _: Identity) -> Json<PlayitStatus> {
@@ -314,7 +314,7 @@ async fn server_playit_view(state: &AppState, record: &ServerRecord) -> ServerPl
             binding: Some(binding),
             tunnel: None,
             message: Some(
-                "Playit accepted the tunnel, but it is not visible in the daemon yet".into(),
+                "Playit accepted the tunnel, but it is not visible in the service yet".into(),
             ),
         };
     };
@@ -339,7 +339,7 @@ async fn server_playit_view(state: &AppState, record: &ServerRecord) -> ServerPl
     let message = match state {
         ServerPlayitState::DisabledByPlayit => tunnel.disabled_reason.clone(),
         ServerPlayitState::Drifted => {
-            Some("the daemon destination differs from the server port".into())
+            Some("the Playit destination differs from the server port".into())
         }
         _ => None,
     };

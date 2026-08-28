@@ -6,19 +6,19 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlayitConnectionState {
-    /// The daemon is running with a configured account.
+    /// The Playit service is running with a configured account.
     Connected,
-    /// The daemon is running but needs account setup through the claim flow.
+    /// The Playit service is running but needs account setup through the claim flow.
     NeedsClaim,
-    /// The daemon is starting.
+    /// The Playit service is starting.
     Starting,
-    /// The daemon is stopping.
+    /// The Playit service is stopping.
     Stopping,
-    /// No usable daemon connection is available.
+    /// No usable Playit service is available.
     Unavailable,
-    /// The daemon speaks an incompatible IPC protocol.
+    /// An external Playit daemon speaks an incompatible IPC protocol.
     Unsupported,
-    /// The daemon reported an operational error.
+    /// The Playit service reported an operational error.
     Error,
 }
 
@@ -27,7 +27,7 @@ pub enum PlayitConnectionState {
 pub struct PlayitStatus {
     /// The state a panel UI should display.
     pub status: PlayitConnectionState,
-    /// The daemon version, when it could be read.
+    /// The Playit service version, when it could be read.
     pub version: Option<String>,
     /// A human-readable diagnostic, when one is available.
     pub message: Option<String>,
@@ -52,11 +52,11 @@ pub enum PlayitAccountStatus {
 pub struct PlayitAccount {
     /// The account state, without exposing the account secret.
     pub status: PlayitAccountStatus,
-    /// The daemon's public agent identifier.
+    /// The Playit agent's public identifier.
     pub agent_id: Option<String>,
-    /// A login link supplied by the daemon, if any.
+    /// A login link supplied by Playit, if any.
     pub login_link: Option<String>,
-    /// A claim link supplied by the daemon, if any.
+    /// A claim link supplied by Playit, if any.
     pub claim_url: Option<String>,
 }
 
@@ -80,7 +80,7 @@ pub enum PlayitProtocol {
     Both,
 }
 
-/// A tunnel known to the Playit daemon.
+/// A tunnel known to the Playit service.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayitTunnel {
     /// Stable Playit tunnel identifier.
@@ -89,13 +89,13 @@ pub struct PlayitTunnel {
     pub name: Option<String>,
     /// Public address players can use.
     pub display_address: String,
-    /// Destination represented by the daemon.
+    /// Destination represented by the Playit service.
     pub destination: String,
     /// Transport protocol.
     pub protocol: PlayitProtocol,
-    /// Local bind address, when supplied by the daemon.
+    /// Local bind address, when supplied by the Playit service.
     pub local_address: Option<String>,
-    /// Local destination port, when supplied by the daemon.
+    /// Local destination port, when supplied by the Playit service.
     pub local_port: Option<u16>,
     /// Whether Playit has disabled this tunnel.
     pub disabled: bool,
@@ -108,6 +108,6 @@ pub struct PlayitTunnel {
 pub struct TunnelCreateInfo {
     /// Stable Playit tunnel identifier.
     pub tunnel_id: String,
-    /// Optional daemon message.
+    /// Optional Playit service message.
     pub message: Option<String>,
 }

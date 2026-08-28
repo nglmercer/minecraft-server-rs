@@ -287,7 +287,7 @@ async fn delete(
 
     // A panel-managed tunnel is an external resource. Clean it up before
     // removing the record so a successful delete cannot strand a public route.
-    // If the daemon is unavailable, keep the server and binding intact so the
+    // If the Playit service is unavailable, keep the server and binding intact so the
     // operator can retry rather than losing the association.
     if let Some(binding) = record.playit.as_ref() {
         let tunnels = state.playit.tunnels().await?;

@@ -27,9 +27,9 @@ pub struct User {
 
 /// A panel-owned association with one Playit tunnel.
 ///
-/// The daemon remains the source of truth for the tunnel's public address and
-/// operational state. The panel only persists the stable id and the local
-/// destination it asked Playit to expose.
+/// The Playit service remains the source of truth for the tunnel's public
+/// address and operational state. The panel only persists the stable id and
+/// the local destination it asked Playit to expose.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayitBinding {
     /// Stable id assigned by Playit.

@@ -29,6 +29,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::state::AppState;
+use crate::state::PlayitMode;
 use crate::store::User;
 
 /// Command line options.
@@ -39,7 +40,7 @@ use crate::store::User;
     about = "A fast, simple Minecraft server panel"
 )]
 struct Args {
-    /// Where servers, JDKs and panel state are stored.
+    /// Where Playit state, servers, JDKs and panel state are stored.
     #[arg(long, default_value = "./data", env = "MCPANEL_DATA")]
     data_dir: PathBuf,
 
@@ -50,6 +51,15 @@ struct Args {
     /// Allow browser requests from any origin. Needed only for `npm run dev`.
     #[arg(long, env = "MCPANEL_DEV_CORS")]
     dev_cors: bool,
+
+    /// Select the embedded Playit runtime or a separately managed external daemon.
+    #[arg(
+        long,
+        value_enum,
+        default_value = "embedded",
+        env = "MCPANEL_PLAYIT_MODE"
+    )]
+    playit_mode: PlayitMode,
 }
 
 #[tokio::main]
@@ -57,39 +67,50 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "mcpanel=info,panel=info,tower_http=warn".into()),
+                .unwrap_or_else(|_| {
+                    "mcpanel=info,panel=info,playit_integration=info,playit_runtime=info,playit_agent_core=info,tower_http=warn".into()
+                }),
         )
         .init();
 
     let args = Args::parse();
-    let state = AppState::bootstrap(&args.data_dir).await?;
+    let state = AppState::bootstrap(&args.data_dir, args.playit_mode).await?;
 
-    ensure_admin(&state).await?;
+    let server_result = async {
+        ensure_admin(&state).await?;
 
-    let mut app = Router::new()
-        .nest("/api", api::router())
-        .fallback(web::serve)
-        .layer(TraceLayer::new_for_http());
+        let mut app = Router::new()
+            .nest("/api", api::router())
+            .fallback(web::serve)
+            .layer(TraceLayer::new_for_http());
 
-    if args.dev_cors {
-        app = app.layer(CorsLayer::very_permissive());
-        tracing::warn!("permissive CORS is enabled; do not use this in production");
+        if args.dev_cors {
+            app = app.layer(CorsLayer::very_permissive());
+            tracing::warn!("permissive CORS is enabled; do not use this in production");
+        }
+
+        let app = app.with_state(state.clone());
+
+        let listener = tokio::net::TcpListener::bind(args.bind)
+            .await
+            .with_context(|| format!("binding {}", args.bind))?;
+
+        tracing::info!("panel listening on http://{}", args.bind);
+
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown())
+            .await
+            .context("server error")?;
+
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    if let Err(error) = state.playit.shutdown().await {
+        tracing::error!(error = %error, "failed to shut down Playit runtime cleanly");
     }
 
-    let app = app.with_state(state);
-
-    let listener = tokio::net::TcpListener::bind(args.bind)
-        .await
-        .with_context(|| format!("binding {}", args.bind))?;
-
-    tracing::info!("panel listening on http://{}", args.bind);
-
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown())
-        .await
-        .context("server error")?;
-
-    Ok(())
+    server_result
 }
 
 /// Create the initial admin account when the panel has no users yet.

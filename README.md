@@ -25,7 +25,7 @@ node daemon.
                     ▼
             ┌───────────────┐
             │     panel     │  REST + WebSocket API, auth, files,
-            │   (mcpanel)   │  Playit IPC and the embedded web UI
+            │   (mcpanel)   │  embedded Playit and web UI
             └───────────────┘
 ```
 
@@ -53,7 +53,7 @@ The first run prints a generated `admin` password. It is shown once.
 | --------------------------- | ----------------------------------------------------- |
 | `crates/guardian`           | The lifecycle library. No HTTP, no panel concepts.    |
 | `crates/panel`              | The `mcpanel` binary: API, auth, embedded frontend.   |
-| `crates/playit-integration` | Optional Playit daemon IPC adapter.                  |
+| `crates/playit-integration` | Embedded Playit runtime and optional daemon IPC.     |
 | `web`                       | Vite + Preact + TypeScript + Tailwind v4 frontend.    |
 | `vendor/java-path-rs`       | Submodule: Java discovery and provisioning.           |
 | `vendor/minecraft-core-rs`  | Submodule: server artifact resolution and download.   |
@@ -63,8 +63,11 @@ Everything the panel owns at runtime lives under `--data-dir`:
 ```
 data/
 ├── panel.json          users and server records
+├── playit/             embedded Playit state
+│   └── secret.toml     dedicated Playit secret (never in panel.json)
 ├── jdks/               JDKs downloaded on demand, shared by all servers
-└── servers/<uuid>/     one server's working directory (worlds, plugins, jar)
+├── servers/<uuid>/     one server's working directory (worlds, plugins, jar)
+└── backups/<uuid>/     server backups
 ```
 
 ## Why this stack
@@ -95,18 +98,43 @@ cd web && npm run dev     # http://localhost:5173, proxies /api to :8080
 
 ## Playit setup
 
-The panel connects to a Playit agent running on the same host through its local
-IPC endpoint. Start the agent before configuring a tunnel, then open the
-admin-only **Playit** section in the web UI (`#/playit`). If the agent needs an
-account, use **Connect** to start the browser claim flow and finish the setup
-at the generated Playit link.
+No separate Playit installation is required. Start `mcpanel`, open the
+admin-only **Playit** section in the web UI (`#/playit`), and click **Connect**.
+The panel starts an embedded Playit runtime and stores its dedicated secret
+under `<data-dir>/playit/secret.toml`. Open the generated claim link and return
+to the panel when approval is complete.
 
-Once the agent is connected, choose a server and create its tunnel. The panel
-uses TCP to `127.0.0.1:<server-port>`, stores the Playit tunnel id in
-`panel.json`, and polls the agent so provisioning, disabled, drifted, and
-connected states are visible. The server settings page also exposes the same
-attach/detach controls. Deleting a server or tunnel removes a panel-managed
-tunnel first when the agent is available.
+Once Playit is connected, choose a server and create its tunnel. The panel uses
+TCP to `127.0.0.1:<server-port>`, stores the Playit tunnel id in `panel.json`,
+and polls the service so provisioning, disabled, drifted, and connected states
+are visible. The server settings page also exposes the same attach/detach
+controls. Deleting a server or tunnel removes a panel-managed tunnel first
+when the service is available.
+
+Operators who intentionally run a compatible external `playitd` can select the
+legacy IPC backend explicitly:
+
+```sh
+mcpanel --playit-mode external --data-dir ./data --bind 0.0.0.0:8080
+```
+
+The `MCPANEL_PLAYIT_MODE=external` environment variable is equivalent. External
+mode does not stop the independently managed daemon when the panel exits.
+
+Embedded and external modes keep separate Playit credentials. Switching from an
+external daemon does not import its secret automatically, so embedded mode may
+require a new claim. Existing panel tunnel bindings are preserved and are
+reconciled against whichever Playit account is active.
+
+The runtime boundary is:
+
+```
+panel (mcpanel)
+    │
+    └── PlayitManager
+          ├── embedded PlayitRuntime (default)
+          └── external playitd IPC (optional)
+```
 
 ## API
 
@@ -120,7 +148,7 @@ handshake.
 | `POST`              | `/auth/logout`                         | Invalidate the current token       |
 | `GET`               | `/auth/me`                             | The current account                |
 | `POST`              | `/auth/password`                       | Change your password               |
-| `GET`               | `/playit/status`                       | Inspect local Playit daemon state  |
+| `GET`               | `/playit/status`                       | Inspect Playit service state       |
 | `GET`               | `/playit/account`                      | Inspect Playit account state (admin) |
 | `POST`              | `/playit/claim`                       | Start the browser-based claim flow (admin) |
 | `GET` `POST`        | `/playit/tunnels`                     | List / create tunnels (admin)      |
@@ -328,8 +356,9 @@ Working end to end, and verified against a live Paper server: provisioning,
 supervision, crash recovery, console, file manager with upload and archive
 extraction, backups with restore, Modrinth plugin and mod installation,
 per-server resource metrics, multi-user accounts with per-server access.
-Playit account claiming and per-server TCP tunnels are also available from the
-admin web UI when a local Playit agent is running.
+Playit account claiming and per-server TCP tunnels are available from the
+admin web UI through the embedded runtime by default, or through an external
+agent in explicit external mode.
 
 Not built yet:
 

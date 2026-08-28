@@ -1,6 +1,7 @@
 //! Shared application state: the store, the live guardians and the sessions.
 
 use anyhow::{Context, Result};
+use clap::ValueEnum;
 use guardian::Guardian;
 use playit_integration::PlayitManager;
 use std::collections::HashMap;
@@ -14,6 +15,16 @@ use crate::metrics::Metrics;
 use crate::store::{ServerRecord, Store};
 use crate::tickets::Tickets;
 
+/// The Playit backend used by the panel.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum PlayitMode {
+    /// Run Playit directly inside the panel process.
+    #[default]
+    Embedded,
+    /// Connect to an independently managed external `playitd` process.
+    External,
+}
+
 /// Everything the HTTP layer needs.
 pub struct AppState {
     /// Persisted panel state.
@@ -22,13 +33,13 @@ pub struct AppState {
     pub sessions: Sessions,
     /// One live guardian per configured server.
     guardians: RwLock<HashMap<String, Arc<Guardian>>>,
-    /// Root for jdks, server directories and `panel.json`.
+    /// Root for Playit state, JDKs, server directories and `panel.json`.
     pub data_dir: PathBuf,
     /// Per-process CPU and memory sampling.
     pub metrics: Metrics,
     /// Short-lived grants for browser-driven downloads.
     pub tickets: Tickets,
-    /// Adapter for the optional local Playit daemon.
+    /// The panel's embedded or explicitly external Playit integration.
     pub playit: Arc<PlayitManager>,
 }
 
@@ -37,7 +48,10 @@ impl AppState {
     ///
     /// Guardians are created but not started: a panel restart must not silently
     /// bring servers back up that the operator had stopped.
-    pub async fn bootstrap(data_dir: impl Into<PathBuf>) -> Result<Arc<Self>> {
+    pub async fn bootstrap(
+        data_dir: impl Into<PathBuf>,
+        playit_mode: PlayitMode,
+    ) -> Result<Arc<Self>> {
         let data_dir = data_dir.into();
         tokio::fs::create_dir_all(data_dir.join("servers"))
             .await
@@ -53,6 +67,25 @@ impl AppState {
         let store = Arc::new(Store::load(&data_dir).await?);
         migrate_relative_directories(&store, &data_dir).await?;
 
+        let playit = match playit_mode {
+            PlayitMode::Embedded => {
+                let secret_path = data_dir.join("playit").join("secret.toml");
+                match PlayitManager::embedded(secret_path).await {
+                    Ok(manager) => manager,
+                    Err(error) => {
+                        tracing::error!(
+                            error = %error,
+                            "failed to start embedded Playit runtime"
+                        );
+                        PlayitManager::unavailable(format!(
+                            "embedded Playit runtime failed to start: {error}"
+                        ))
+                    }
+                }
+            }
+            PlayitMode::External => PlayitManager::external(),
+        };
+
         let mut guardians = HashMap::new();
         for record in store.read().await.servers {
             guardians.insert(record.id.clone(), spawn_guardian(&record, &data_dir));
@@ -65,7 +98,7 @@ impl AppState {
             data_dir,
             metrics: Metrics::default(),
             tickets: Tickets::default(),
-            playit: Arc::new(PlayitManager::new()),
+            playit: Arc::new(playit),
         }))
     }
 
@@ -148,4 +181,55 @@ async fn migrate_relative_directories(store: &Store, data_dir: &Path) -> Result<
         .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppState, PlayitMode};
+    use playit_integration::{PlayitConnectionState, PlayitManager};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn embedded_bootstrap_starts_without_an_external_daemon() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let state = AppState::bootstrap(data_dir.path(), PlayitMode::Embedded)
+            .await
+            .unwrap();
+
+        let status = state.playit.status().await.unwrap();
+        assert!(matches!(
+            status.status,
+            PlayitConnectionState::NeedsClaim | PlayitConnectionState::Starting
+        ));
+        assert_eq!(
+            state.data_dir.join("playit").join("secret.toml"),
+            data_dir
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("playit")
+                .join("secret.toml")
+        );
+
+        state.playit.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn external_bootstrap_succeeds_without_a_daemon() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let state = AppState::bootstrap(data_dir.path(), PlayitMode::External)
+            .await
+            .unwrap();
+
+        let error = tokio::time::timeout(Duration::from_secs(2), state.playit.status())
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            PlayitManager::status_from_error(&error).status,
+            PlayitConnectionState::Unavailable
+        );
+
+        state.playit.shutdown().await.unwrap();
+    }
 }
