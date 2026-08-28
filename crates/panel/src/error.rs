@@ -24,6 +24,10 @@ pub enum ApiError {
     #[error("{0}")]
     BadRequest(String),
 
+    /// The request conflicts with the current panel state.
+    #[error("{0}")]
+    Conflict(String),
+
     /// A guardian rejected or failed the operation.
     #[error("{0}")]
     Guardian(#[from] guardian::Error),
@@ -44,6 +48,7 @@ impl IntoResponse for ApiError {
             ApiError::Forbidden => StatusCode::FORBIDDEN,
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            ApiError::Conflict(_) => StatusCode::CONFLICT,
             // An invalid transition is the client's fault, not the server's.
             ApiError::Guardian(guardian::Error::InvalidTransition { .. }) => StatusCode::CONFLICT,
             ApiError::Playit(_) => StatusCode::SERVICE_UNAVAILABLE,

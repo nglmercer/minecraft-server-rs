@@ -24,7 +24,7 @@ import { Tooltip } from "../components/Tooltip";
 import { useDialogs } from "../components/Modal";
 import { useToast } from "../components/Toast";
 import { useT } from "../i18n";
-import type { Server, Status, User } from "../types";
+import type { Server, ServerPlayitView, Status, User } from "../types";
 
 type Tab = "console" | "files" | "plugins" | "backups" | "settings";
 
@@ -42,12 +42,15 @@ export function ServerDetail({
   const menu = useMenu();
 
   const [server, setServer] = useState<Server | null>(null);
+  const [playit, setPlayit] = useState<ServerPlayitView | null>(null);
   const [tab, setTab] = useState<Tab>("console");
   const [failed, setFailed] = useState<string | null>(null);
 
   async function refresh() {
     try {
-      setServer(await api.server(id));
+      const [nextServer, nextPlayit] = await Promise.all([api.server(id), api.serverPlayit(id)]);
+      setServer(nextServer);
+      setPlayit(nextPlayit);
       setFailed(null);
     } catch (e) {
       setFailed(e instanceof Error ? e.message : t("errors.loadServer"));
@@ -272,7 +275,13 @@ export function ServerDetail({
         {tab === "plugins" && <Mods server={server} />}
         {tab === "backups" && <Backups serverId={id} status={server.status} />}
         {tab === "settings" && (
-          <Settings server={server} user={user} onSaved={refresh} onDeleted={onBack} />
+          <Settings
+            server={server}
+            playit={playit}
+            user={user}
+            onSaved={refresh}
+            onDeleted={onBack}
+          />
         )}
       </div>
     </div>
@@ -384,11 +393,13 @@ function Installed({ server, onChanged }: { server: Server; onChanged: () => voi
 
 function Settings({
   server,
+  playit,
   user,
   onSaved,
   onDeleted,
 }: {
   server: Server;
+  playit: ServerPlayitView | null;
   user: User;
   onSaved: () => void;
   onDeleted: () => void;
@@ -522,6 +533,8 @@ function Settings({
         </label>
       </Card>
 
+      {playit && <PlayitSettings server={server} playit={playit} user={user} onChanged={onSaved} />}
+
       <Installed server={server} onChanged={onSaved} />
 
       <Card title={t("settings.recoverySection")}>
@@ -570,5 +583,121 @@ function Settings({
         )}
       </div>
     </form>
+  );
+}
+
+function PlayitSettings({
+  server,
+  playit,
+  user,
+  onChanged,
+}: {
+  server: Server;
+  playit: ServerPlayitView;
+  user: User;
+  onChanged: () => void;
+}) {
+  const t = useT();
+  const toast = useToast();
+  const dialogs = useDialogs();
+  const [busy, setBusy] = useState(false);
+
+  async function attach() {
+    setBusy(true);
+    try {
+      await api.attachPlayit(server.id);
+      toast.success(t("playit.tunnelCreated"));
+      onChanged();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : t("errors.playitAction"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function detach() {
+    const confirmed = await dialogs.confirm({
+      title: t("playit.deleteTunnelTitle", { name: server.name }),
+      body: t("playit.detachTunnelBody"),
+      confirmLabel: t("common.delete"),
+      danger: true,
+    });
+    if (!confirmed) return;
+
+    setBusy(true);
+    try {
+      await api.detachPlayit(server.id);
+      toast.success(t("playit.tunnelDeleted"));
+      onChanged();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : t("errors.playitAction"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyAddress() {
+    const address = playit.tunnel?.display_address;
+    if (!address || !navigator.clipboard) {
+      toast.error(t("playit.copyUnavailable"));
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(address);
+      toast.success(t("playit.addressCopied"));
+    } catch {
+      toast.error(t("playit.copyUnavailable"));
+    }
+  }
+
+  const stateKind = ["unavailable", "drifted", "disabled_by_playit"].includes(playit.state)
+    ? "error"
+    : "info";
+
+  return (
+    <Card title={t("playit.serverCardTitle")}>
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p class="font-medium">{t(`playit.serverStates.${playit.state}` as "playit.serverStates.disabled")}</p>
+          <p class="mt-1 text-sm text-fg-muted">
+            {playit.binding
+              ? `${playit.binding.local_address}:${playit.binding.local_port}`
+              : t("playit.serverNotConfigured")}
+          </p>
+        </div>
+        {playit.tunnel?.display_address && (
+          <Button variant="ghost" icon={<Icon.Copy size={15} />} onClick={() => void copyAddress()}>
+            {playit.tunnel.display_address}
+          </Button>
+        )}
+      </div>
+
+      {playit.message && (
+        <div class="mt-4">
+          <Banner kind={stateKind}>{playit.message}</Banner>
+        </div>
+      )}
+
+      {playit.tunnel && (
+        <p class="mt-3 text-xs text-fg-muted">
+          {t("playit.destination")}: <span class="font-mono text-fg">{playit.tunnel.destination}</span>
+        </p>
+      )}
+
+      {user.admin && (
+        <div class="mt-4 flex flex-wrap gap-2">
+          {playit.state === "disabled" && (
+            <Button variant="primary" disabled={busy} onClick={() => void attach()}>
+              {busy ? t("common.creating") : t("playit.connectServer")}
+            </Button>
+          )}
+          {playit.state !== "disabled" && (
+            <Button variant="danger" disabled={busy} onClick={() => void detach()}>
+              {busy ? t("common.deleting") : t("playit.disconnectServer")}
+            </Button>
+          )}
+        </div>
+      )}
+    </Card>
   );
 }

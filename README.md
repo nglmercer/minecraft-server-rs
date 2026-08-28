@@ -93,6 +93,21 @@ cd web && npm run dev     # http://localhost:5173, proxies /api to :8080
 
 `--dev-cors` enables a permissive CORS policy. Do not use it in production.
 
+## Playit setup
+
+The panel connects to a Playit agent running on the same host through its local
+IPC endpoint. Start the agent before configuring a tunnel, then open the
+admin-only **Playit** section in the web UI (`#/playit`). If the agent needs an
+account, use **Connect** to start the browser claim flow and finish the setup
+at the generated Playit link.
+
+Once the agent is connected, choose a server and create its tunnel. The panel
+uses TCP to `127.0.0.1:<server-port>`, stores the Playit tunnel id in
+`panel.json`, and polls the agent so provisioning, disabled, drifted, and
+connected states are visible. The server settings page also exposes the same
+attach/detach controls. Deleting a server or tunnel removes a panel-managed
+tunnel first when the agent is available.
+
 ## API
 
 Everything is under `/api`. Authenticate with `Authorization: Bearer <token>`;
@@ -106,10 +121,13 @@ handshake.
 | `GET`               | `/auth/me`                             | The current account                |
 | `POST`              | `/auth/password`                       | Change your password               |
 | `GET`               | `/playit/status`                       | Inspect local Playit daemon state  |
-| `GET`               | `/playit/account`                      | Inspect Playit account state       |
+| `GET`               | `/playit/account`                      | Inspect Playit account state (admin) |
 | `POST`              | `/playit/claim`                       | Start the browser-based claim flow (admin) |
+| `GET` `POST`        | `/playit/tunnels`                     | List / create tunnels (admin)      |
+| `DELETE`            | `/playit/tunnels/{id}`                | Delete a tunnel (admin)            |
 | `GET` `POST`        | `/servers`                             | List / create                      |
 | `GET` `PATCH` `DELETE` | `/servers/{id}`                     | Inspect / reconfigure / remove     |
+| `GET` `POST` `DELETE` | `/servers/{id}/playit`              | Inspect / attach / detach its tunnel |
 | `POST`              | `/servers/{id}/power`                  | `start`, `stop`, `restart`, `kill` |
 | `POST`              | `/servers/{id}/command`                | Send a console command             |
 | `POST`              | `/servers/{id}/reinstall`              | Re-resolve and download the artifact |
@@ -310,17 +328,15 @@ Working end to end, and verified against a live Paper server: provisioning,
 supervision, crash recovery, console, file manager with upload and archive
 extraction, backups with restore, Modrinth plugin and mod installation,
 per-server resource metrics, multi-user accounts with per-server access.
+Playit account claiming and per-server TCP tunnels are also available from the
+admin web UI when a local Playit agent is running.
 
 Not built yet:
 
 1. **Scheduled backups.** Backups are on demand; a cron-style schedule per
    server is the obvious next step.
-2. **Tunnelling for players outside the LAN.** This needs a third-party service
-   and per-user credentials, which is a different kind of decision from the
-   rest of the panel — worth choosing deliberately rather than defaulting to
-   whatever integrates fastest.
-3. **Hangar and CurseForge** as add-on sources alongside Modrinth.
-4. **Console log persistence.** The buffer is in memory, so it resets when the
+2. **Hangar and CurseForge** as add-on sources alongside Modrinth.
+3. **Console log persistence.** The buffer is in memory, so it resets when the
    panel restarts. The server's own `logs/` directory is untouched and remains
    the durable record.
 

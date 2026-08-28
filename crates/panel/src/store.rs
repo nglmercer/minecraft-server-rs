@@ -5,6 +5,7 @@
 //! not needing one is most of why this is easier to run than Pterodactyl.
 
 use anyhow::{Context, Result};
+use playit_integration::PlayitProtocol;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::sync::RwLock;
@@ -24,6 +25,23 @@ pub struct User {
     pub servers: Vec<String>,
 }
 
+/// A panel-owned association with one Playit tunnel.
+///
+/// The daemon remains the source of truth for the tunnel's public address and
+/// operational state. The panel only persists the stable id and the local
+/// destination it asked Playit to expose.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlayitBinding {
+    /// Stable id assigned by Playit.
+    pub tunnel_id: String,
+    /// Transport requested for this binding.
+    pub protocol: PlayitProtocol,
+    /// Local address exposed through the tunnel.
+    pub local_address: String,
+    /// Local port exposed through the tunnel.
+    pub local_port: u16,
+}
+
 /// A server as the panel stores it: identity plus the two guardian configs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerRecord {
@@ -35,6 +53,9 @@ pub struct ServerRecord {
     pub config: guardian::ServerConfig,
     /// How to supervise it.
     pub policy: guardian::GuardianConfig,
+    /// Optional panel-managed Playit tunnel.
+    #[serde(default)]
+    pub playit: Option<PlayitBinding>,
     /// RFC 3339 creation timestamp.
     pub created_at: String,
 }
@@ -253,5 +274,65 @@ mod tests {
 
         // Starting fresh here would silently orphan every configured server.
         assert!(Store::load(tmp.path()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn older_server_records_load_without_a_playit_binding() {
+        let tmp = tempfile::tempdir().unwrap();
+        let record = ServerRecord {
+            id: "server-1".into(),
+            name: "Survival".into(),
+            config: guardian::ServerConfig::paper(tmp.path().join("server-1"), "1.21.8"),
+            policy: guardian::GuardianConfig::default(),
+            playit: None,
+            created_at: "2026-08-28T00:00:00Z".into(),
+        };
+        let mut document = serde_json::to_value(PanelData {
+            users: vec![],
+            servers: vec![record],
+        })
+        .unwrap();
+        document["servers"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("playit");
+        std::fs::write(
+            tmp.path().join("panel.json"),
+            serde_json::to_vec_pretty(&document).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = Store::load(tmp.path()).await.unwrap();
+        assert!(loaded.read().await.servers[0].playit.is_none());
+    }
+
+    #[tokio::test]
+    async fn playit_bindings_survive_a_store_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::load(tmp.path()).await.unwrap();
+        let record = ServerRecord {
+            id: "server-1".into(),
+            name: "Survival".into(),
+            config: guardian::ServerConfig::paper(tmp.path().join("server-1"), "1.21.8"),
+            policy: guardian::GuardianConfig::default(),
+            playit: Some(PlayitBinding {
+                tunnel_id: "tunnel-1".into(),
+                protocol: PlayitProtocol::Tcp,
+                local_address: "127.0.0.1".into(),
+                local_port: 25565,
+            }),
+            created_at: "2026-08-28T00:00:00Z".into(),
+        };
+
+        store
+            .update(|data| data.servers.push(record))
+            .await
+            .unwrap();
+
+        let reloaded = Store::load(tmp.path()).await.unwrap();
+        let binding = reloaded.read().await.servers[0].playit.clone().unwrap();
+        assert_eq!(binding.tunnel_id, "tunnel-1");
+        assert_eq!(binding.protocol, PlayitProtocol::Tcp);
+        assert_eq!(binding.local_port, 25565);
     }
 }

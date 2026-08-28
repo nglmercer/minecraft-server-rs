@@ -54,6 +54,38 @@ describe("authentication", () => {
   });
 });
 
+describe("playit", () => {
+  beforeEach(() => {
+    localStorage.setItem("mcpanel.token", "session-token");
+  });
+
+  it("uses the authenticated claim and server tunnel endpoints", async () => {
+    const fetchMock = mockFetch(
+      jsonResponse({ claim_url: "https://playit.gg/claim/abc" }),
+      jsonResponse({ state: "provisioning", binding: null, tunnel: null, message: null }),
+    );
+
+    await api.playitClaim();
+    await api.attachPlayit("server-1");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/playit/claim");
+    expect(fetchMock.mock.calls[0][1].method).toBe("POST");
+    expect((fetchMock.mock.calls[0][1].headers as Headers).get("Authorization")).toBe(
+      "Bearer session-token",
+    );
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/servers/server-1/playit");
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({});
+  });
+
+  it("escapes tunnel ids before putting them in a delete path", async () => {
+    const fetchMock = mockFetch(jsonResponse({ ok: true }));
+
+    await api.deletePlayitTunnel("tunnel/with spaces");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/playit/tunnels/tunnel%2Fwith%20spaces");
+  });
+});
+
 describe("downloads", () => {
   beforeEach(() => {
     localStorage.setItem("mcpanel.token", "session-token");

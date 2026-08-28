@@ -5,8 +5,12 @@ import type {
   Installed,
   JavaInstall,
   PanelUser,
+  PlayitAccount,
+  PlayitStatus,
+  PlayitTunnel,
   Project,
   Server,
+  ServerPlayitView,
   SystemStats,
   User,
 } from "./types";
@@ -95,9 +99,43 @@ export const api = {
       body: json({ current, new: next }),
     }),
 
+  playitStatus: () => request<PlayitStatus>("/playit/status"),
+
+  playitAccount: () => request<PlayitAccount>("/playit/account"),
+
+  playitClaim: () => request<{ claim_url: string }>("/playit/claim", { method: "POST" }),
+
+  playitTunnels: () => request<PlayitTunnel[]>("/playit/tunnels"),
+
+  createPlayitTunnel: (body: {
+    local_port: number;
+    protocol: "tcp" | "udp" | "both";
+    local_address?: string;
+    name?: string;
+  }) => request<{ tunnel_id: string; message: string | null }>("/playit/tunnels", {
+    method: "POST",
+    body: json(body),
+  }),
+
+  deletePlayitTunnel: (tunnelId: string) =>
+    request<{ ok: boolean }>(`/playit/tunnels/${encodeURIComponent(tunnelId)}`, {
+      method: "DELETE",
+    }),
+
   servers: () => request<Server[]>("/servers"),
 
   server: (id: string) => request<Server>(`/servers/${id}`),
+
+  serverPlayit: (id: string) => request<ServerPlayitView>(`/servers/${id}/playit`),
+
+  attachPlayit: (id: string, name?: string) =>
+    request<ServerPlayitView>(`/servers/${id}/playit`, {
+      method: "POST",
+      body: json(name ? { name } : {}),
+    }),
+
+  detachPlayit: (id: string) =>
+    request<ServerPlayitView>(`/servers/${id}/playit`, { method: "DELETE" }),
 
   createServer: (body: Record<string, unknown>) =>
     request<Server>("/servers", { method: "POST", body: json(body) }),

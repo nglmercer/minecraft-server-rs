@@ -20,6 +20,70 @@ export interface Policy {
   console_buffer: number;
 }
 
+export type PlayitConnectionState =
+  | "connected"
+  | "needs_claim"
+  | "starting"
+  | "stopping"
+  | "unavailable"
+  | "unsupported"
+  | "error";
+
+export type PlayitAccountStatus =
+  | "unknown"
+  | "guest"
+  | "email_not_verified"
+  | "verified";
+
+export type PlayitProtocol = "tcp" | "udp" | "both";
+
+export interface PlayitStatus {
+  status: PlayitConnectionState;
+  version: string | null;
+  message: string | null;
+}
+
+export interface PlayitAccount {
+  status: PlayitAccountStatus;
+  agent_id: string | null;
+  login_link: string | null;
+  claim_url: string | null;
+}
+
+export interface PlayitTunnel {
+  id: string;
+  name: string | null;
+  display_address: string;
+  destination: string;
+  protocol: PlayitProtocol;
+  local_address: string | null;
+  local_port: number | null;
+  disabled: boolean;
+  disabled_reason: string | null;
+}
+
+export interface PlayitBinding {
+  tunnel_id: string;
+  protocol: PlayitProtocol;
+  local_address: string;
+  local_port: number;
+}
+
+export type ServerPlayitState =
+  | "disabled"
+  | "provisioning"
+  | "connected"
+  | "disabled_by_playit"
+  | "drifted"
+  | "unavailable";
+
+export interface ServerPlayitView {
+  state: ServerPlayitState;
+  binding: PlayitBinding | null;
+  tunnel: PlayitTunnel | null;
+  message: string | null;
+}
+
 /** Mirrors the flattened `ServerView` returned by the API. */
 export interface Server {
   id: string;
@@ -44,6 +108,8 @@ export interface Server {
   needs_install: boolean;
   /** Bytes on disk in this server's directory. */
   disk_bytes: number;
+  /** Panel-owned Playit association, when configured. */
+  playit: PlayitBinding | null;
 }
 
 export interface ProcessMetrics {

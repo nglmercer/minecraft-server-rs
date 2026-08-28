@@ -38,6 +38,8 @@ pub struct ServerView {
     needs_install: bool,
     /// Bytes on disk in this server's directory.
     disk_bytes: u64,
+    /// The panel-owned Playit association, when one exists.
+    playit: Option<crate::store::PlayitBinding>,
 }
 
 async fn view(state: &AppState, record: &ServerRecord) -> ApiResult<ServerView> {
@@ -69,6 +71,7 @@ async fn view(state: &AppState, record: &ServerRecord) -> ApiResult<ServerView> 
         installed,
         needs_install,
         disk_bytes,
+        playit: record.playit.clone(),
     })
 }
 
@@ -158,6 +161,7 @@ async fn create(
             eula_accepted: body.eula_accepted,
         },
         policy: GuardianConfig::default(),
+        playit: None,
         created_at: now(),
     };
 
@@ -226,6 +230,16 @@ async fn update(
         // Create checked this; update has to as well, or two servers end up
         // fighting over the same port and the second one dies at bind time.
         port_is_free(&state, port, Some(&id)).await?;
+        if record
+            .playit
+            .as_ref()
+            .map(|binding| binding.local_port != port)
+            .unwrap_or(false)
+        {
+            return Err(ApiError::Conflict(
+                "disable the Playit tunnel before changing the server port".into(),
+            ));
+        }
         record.config.port = port;
     }
     if let Some(eula) = body.eula_accepted {
@@ -265,11 +279,22 @@ async fn delete(
     AdminIdentity(admin): AdminIdentity,
     Path(id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    state
+    let record = state
         .store
         .server(&id)
         .await
         .ok_or_else(|| ApiError::NotFound(format!("server {id}")))?;
+
+    // A panel-managed tunnel is an external resource. Clean it up before
+    // removing the record so a successful delete cannot strand a public route.
+    // If the daemon is unavailable, keep the server and binding intact so the
+    // operator can retry rather than losing the association.
+    if let Some(binding) = record.playit.as_ref() {
+        let tunnels = state.playit.tunnels().await?;
+        if tunnels.iter().any(|tunnel| tunnel.id == binding.tunnel_id) {
+            state.playit.delete_tunnel(&binding.tunnel_id).await?;
+        }
+    }
 
     tracing::info!(server = %id, by = %admin.username, "server deleted");
     state.remove_guardian(&id).await;
@@ -280,7 +305,11 @@ async fn delete(
 
     // Server files are deliberately left on disk: deleting a world by clicking
     // a button in a web UI is not a mistake anyone should be able to make.
-    Ok(Json(serde_json::json!({ "ok": true, "files_kept": true })))
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "files_kept": true,
+        "playit_tunnel_deleted": record.playit.is_some()
+    })))
 }
 
 /// Body of `POST /api/servers/:id/power`.
