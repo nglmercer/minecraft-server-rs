@@ -24,6 +24,7 @@ export type PlayitConnectionState =
   | "connected"
   | "needs_claim"
   | "starting"
+  | "reconnecting"
   | "stopping"
   | "unavailable"
   | "unsupported"

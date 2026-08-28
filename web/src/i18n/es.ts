@@ -92,6 +92,7 @@ export const es: Dictionary = {
       connected: "Conectado",
       needs_claim: "Necesita configurar la cuenta",
       starting: "Iniciando",
+      reconnecting: "Reconectando…",
       stopping: "Deteniendo",
       unavailable: "No disponible",
       unsupported: "Agente no compatible",

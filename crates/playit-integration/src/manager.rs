@@ -315,37 +315,6 @@ impl PlayitManager {
         })
     }
 
-    /// Create the default Minecraft Java tunnel for one Minecraft server.
-    ///
-    /// Playit returns the id immediately and may materialize the public
-    /// address asynchronously. The follow-up list lets callers persist the
-    /// complete tunnel once it is visible.
-    pub async fn create_server_tunnel(
-        &self,
-        server_id: &str,
-        server_name: &str,
-        port: u16,
-    ) -> Result<PlayitTunnel, PlayitError> {
-        let created = self
-            .create_minecraft_java_tunnel(
-                port,
-                Some("127.0.0.1".into()),
-                Some(format!("mcpanel:{server_id}:{server_name}")),
-            )
-            .await?;
-
-        self.tunnels()
-            .await?
-            .into_iter()
-            .find(|tunnel| tunnel.id == created.tunnel_id)
-            .ok_or_else(|| {
-                PlayitError::Protocol(format!(
-                    "created tunnel {} was not present in the tunnel list",
-                    created.tunnel_id
-                ))
-            })
-    }
-
     /// Delete a tunnel by its stable Playit id.
     pub async fn delete_tunnel(&self, tunnel_id: &str) -> Result<(), PlayitError> {
         let response = self.service.delete_tunnel(tunnel_id).await?;
@@ -483,7 +452,10 @@ fn lifecycle_state(
         | AgentLifecycle::Error(error) => {
             (PlayitConnectionState::Error, Some(error.message.clone()))
         }
-        AgentLifecycle::Starting => (PlayitConnectionState::Starting, None),
+        AgentLifecycle::Starting => match phase {
+            ServicePhase::Reconnecting => (PlayitConnectionState::Reconnecting, None),
+            _ => (PlayitConnectionState::Starting, None),
+        },
         AgentLifecycle::Stopping => (PlayitConnectionState::Stopping, None),
         AgentLifecycle::Running(_) => match phase {
             ServicePhase::WaitingForSecret => (PlayitConnectionState::NeedsClaim, None),
@@ -492,6 +464,7 @@ fn lifecycle_state(
             ServicePhase::HasInvalidSecret
             | ServicePhase::DisabledOverLimit
             | ServicePhase::Error => (PlayitConnectionState::Error, phase_error_message(phase)),
+            ServicePhase::Reconnecting => (PlayitConnectionState::Reconnecting, None),
             ServicePhase::Running => (PlayitConnectionState::Connected, None),
         },
     }
@@ -504,6 +477,7 @@ fn phase_error_message(phase: &ServicePhase) -> Option<String> {
         ServicePhase::Error => "Playit reported an error",
         ServicePhase::WaitingForSecret
         | ServicePhase::Starting
+        | ServicePhase::Reconnecting
         | ServicePhase::Running
         | ServicePhase::Stopping => return None,
     };
@@ -687,6 +661,11 @@ mod tests {
                 PlayitConnectionState::Starting,
             ),
             (
+                AgentLifecycle::Starting,
+                ServicePhase::Reconnecting,
+                PlayitConnectionState::Reconnecting,
+            ),
+            (
                 AgentLifecycle::Stopping,
                 ServicePhase::Stopping,
                 PlayitConnectionState::Stopping,
@@ -718,32 +697,6 @@ mod tests {
             PlayitManager::status_from_error(&error).status,
             PlayitConnectionState::Unsupported
         );
-    }
-
-    #[tokio::test]
-    async fn server_tunnel_uses_loopback_tcp_and_managed_name() {
-        let service = running_service();
-        service
-            .tunnels
-            .lock()
-            .unwrap()
-            .tunnels
-            .push(playit_ipc::model::TunnelState {
-                id: "tunnel-1".into(),
-                display_address: "example.gl.joinmc.link".into(),
-                destination: "127.0.0.1:25565".into(),
-                local_address: Some("127.0.0.1".into()),
-                local_port: Some(25565),
-                ..playit_ipc::model::TunnelState::default()
-            });
-        let manager = PlayitManager::with_service(service);
-
-        let tunnel = manager
-            .create_server_tunnel("server-1", "Survival SMP", 25565)
-            .await
-            .unwrap();
-
-        assert_eq!(tunnel.id, "tunnel-1");
     }
 
     #[tokio::test]

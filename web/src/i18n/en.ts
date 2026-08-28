@@ -88,6 +88,7 @@ export const en = {
       connected: "Connected",
       needs_claim: "Needs account setup",
       starting: "Starting",
+      reconnecting: "Reconnecting…",
       stopping: "Stopping",
       unavailable: "Unavailable",
       unsupported: "Unsupported Playit service",

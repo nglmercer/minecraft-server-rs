@@ -360,7 +360,12 @@ function accountLabel(
 
 function statusTone(state: PlayitConnectionState | undefined): "good" | "warn" | "bad" | undefined {
   if (state === "connected") return "good";
-  if (state === "needs_claim" || state === "starting" || state === "stopping") return "warn";
+  if (
+    state === "needs_claim" ||
+    state === "starting" ||
+    state === "reconnecting" ||
+    state === "stopping"
+  ) return "warn";
   if (state) return "bad";
   return undefined;
 }

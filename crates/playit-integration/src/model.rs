@@ -12,6 +12,8 @@ pub enum PlayitConnectionState {
     NeedsClaim,
     /// The Playit service is starting.
     Starting,
+    /// The Playit control connection is recovering while the service remains alive.
+    Reconnecting,
     /// The Playit service is stopping.
     Stopping,
     /// No usable Playit service is available.
