@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use playit_ipc::ipc::IpcClient;
 use playit_ipc::model::{
-    AccountResponse, AgentLifecycle, ClaimResponse, CommandResponse, ServiceStatus,
-    TunnelCreateResponse, TunnelListResponse, TunnelProtocol,
+    AccountResponse, AccountTunnelListResponse, AgentLifecycle, ClaimResponse, CommandResponse,
+    ServiceStatus, TunnelCreateResponse, TunnelListResponse, TunnelProtocol,
 };
 
 use crate::error::PlayitError;
@@ -26,6 +26,8 @@ pub trait PlayitService: Send + Sync {
     async fn start_claim(&self) -> Result<ClaimResponse, PlayitError>;
     /// List existing tunnels.
     async fn list_tunnels(&self) -> Result<TunnelListResponse, PlayitError>;
+    /// List every tunnel owned by the authenticated Playit account.
+    async fn list_account_tunnels(&self) -> Result<AccountTunnelListResponse, PlayitError>;
     /// Create a tunnel.
     async fn create_tunnel(
         &self,
@@ -43,6 +45,13 @@ pub trait PlayitService: Send + Sync {
     ) -> Result<TunnelCreateResponse, PlayitError>;
     /// Delete a tunnel by its stable identifier.
     async fn delete_tunnel(&self, tunnel_id: &str) -> Result<CommandResponse, PlayitError>;
+    /// Reassign a tunnel to the current agent and update its local destination.
+    async fn reassign_tunnel(
+        &self,
+        tunnel_id: &str,
+        local_port: u16,
+        local_address: Option<String>,
+    ) -> Result<CommandResponse, PlayitError>;
 }
 
 /// The optional external backend backed by a fresh Playit IPC connection per
@@ -77,6 +86,11 @@ impl PlayitService for IpcPlayitService {
         Ok(client.list_tunnels().await?)
     }
 
+    async fn list_account_tunnels(&self) -> Result<AccountTunnelListResponse, PlayitError> {
+        let mut client = IpcClient::connect().await?;
+        Ok(client.list_account_tunnels().await?)
+    }
+
     async fn create_tunnel(
         &self,
         local_port: u16,
@@ -105,5 +119,17 @@ impl PlayitService for IpcPlayitService {
     async fn delete_tunnel(&self, tunnel_id: &str) -> Result<CommandResponse, PlayitError> {
         let mut client = IpcClient::connect().await?;
         Ok(client.delete_tunnel(tunnel_id).await?)
+    }
+
+    async fn reassign_tunnel(
+        &self,
+        tunnel_id: &str,
+        local_port: u16,
+        local_address: Option<String>,
+    ) -> Result<CommandResponse, PlayitError> {
+        let mut client = IpcClient::connect().await?;
+        Ok(client
+            .reassign_tunnel(tunnel_id, local_port, local_address)
+            .await?)
     }
 }

@@ -86,11 +86,15 @@ struct CreateTunnelRequest {
 }
 
 /// GET `/api/playit/tunnels`.
+///
+/// The account-level API is used here so tunnels assigned to another Playit
+/// agent are visible and can be identified before an operator creates another
+/// one.
 async fn list_tunnels(
     State(state): State<Arc<AppState>>,
     AdminIdentity(_admin): AdminIdentity,
 ) -> ApiResult<Json<Vec<PlayitTunnel>>> {
-    Ok(Json(state.playit.tunnels().await?))
+    Ok(Json(state.playit.account_tunnels().await?))
 }
 
 /// POST `/api/playit/tunnels`.
@@ -180,11 +184,24 @@ async fn attach_server_playit(
         ));
     }
 
-    let name = tunnel_name(body.name)?.or_else(|| Some(format!("mcpanel:{id}")));
-    let created = state
-        .playit
-        .create_minecraft_java_tunnel(record.config.port, Some("127.0.0.1".into()), name)
-        .await?;
+    let created = match tunnel_name(body.name)? {
+        None => {
+            state
+                .playit
+                .ensure_server_tunnel(&id, &record.name, record.config.port)
+                .await?
+        }
+        Some(name) => {
+            state
+                .playit
+                .create_minecraft_java_tunnel(
+                    record.config.port,
+                    Some("127.0.0.1".into()),
+                    Some(name),
+                )
+                .await?
+        }
+    };
 
     let binding = PlayitBinding {
         tunnel_id: created.tunnel_id,
@@ -245,7 +262,7 @@ async fn detach_server_playit(
 
     // Listing first makes detaching idempotent when an operator removed the
     // tunnel directly in the Playit client.
-    let tunnels = state.playit.tunnels().await?;
+    let tunnels = state.playit.account_tunnels().await?;
     if tunnels.iter().any(|tunnel| tunnel.id == binding.tunnel_id) {
         state.playit.delete_tunnel(&binding.tunnel_id).await?;
     }
@@ -288,7 +305,7 @@ async fn server_playit_view(state: &AppState, record: &ServerRecord) -> ServerPl
         };
     };
 
-    let tunnels = match state.playit.tunnels().await {
+    let tunnels = match state.playit.account_tunnels().await {
         Ok(tunnels) => tunnels,
         Err(error) => {
             return ServerPlayitView {

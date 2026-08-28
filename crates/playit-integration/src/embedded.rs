@@ -2,8 +2,8 @@
 
 use async_trait::async_trait;
 use playit_ipc::model::{
-    AccountResponse, AgentLifecycle, ClaimResponse, CommandResponse, ServiceStatus,
-    TunnelCreateResponse, TunnelListResponse, TunnelProtocol,
+    AccountResponse, AccountTunnelListResponse, AgentLifecycle, ClaimResponse, CommandResponse,
+    ServiceStatus, TunnelCreateResponse, TunnelListResponse, TunnelProtocol,
 };
 use playit_runtime::PlayitHandle;
 
@@ -49,6 +49,10 @@ impl PlayitService for EmbeddedPlayitService {
         Ok(self.handle.list_tunnels().await?)
     }
 
+    async fn list_account_tunnels(&self) -> Result<AccountTunnelListResponse, PlayitError> {
+        Ok(self.handle.list_account_tunnels().await?)
+    }
+
     async fn create_tunnel(
         &self,
         local_port: u16,
@@ -76,6 +80,18 @@ impl PlayitService for EmbeddedPlayitService {
 
     async fn delete_tunnel(&self, tunnel_id: &str) -> Result<CommandResponse, PlayitError> {
         Ok(self.handle.delete_tunnel(tunnel_id).await?)
+    }
+
+    async fn reassign_tunnel(
+        &self,
+        tunnel_id: &str,
+        local_port: u16,
+        local_address: Option<String>,
+    ) -> Result<CommandResponse, PlayitError> {
+        Ok(self
+            .handle
+            .reassign_tunnel(tunnel_id, local_port, local_address)
+            .await?)
     }
 }
 

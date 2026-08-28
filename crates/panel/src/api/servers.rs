@@ -290,7 +290,7 @@ async fn delete(
     // If the Playit service is unavailable, keep the server and binding intact so the
     // operator can retry rather than losing the association.
     if let Some(binding) = record.playit.as_ref() {
-        let tunnels = state.playit.tunnels().await?;
+        let tunnels = state.playit.account_tunnels().await?;
         if tunnels.iter().any(|tunnel| tunnel.id == binding.tunnel_id) {
             state.playit.delete_tunnel(&binding.tunnel_id).await?;
         }

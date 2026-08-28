@@ -30,7 +30,8 @@ impl PlayitError {
         match self {
             Self::Ipc(playit_ipc::ipc::IpcError::Service(error)) => Some(error.code.clone()),
             Self::Runtime(error) => Some(error.as_service_error().code),
-            Self::Ipc(_) | Self::Unavailable(_) | Self::Rejected(_) | Self::Protocol(_) => None,
+            Self::Rejected(_) => Some(ServiceErrorCode::ApiRejected),
+            Self::Ipc(_) | Self::Unavailable(_) | Self::Protocol(_) => None,
         }
     }
 

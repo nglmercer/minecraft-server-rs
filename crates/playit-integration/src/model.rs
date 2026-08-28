@@ -93,6 +93,10 @@ pub struct PlayitTunnel {
     pub destination: String,
     /// Transport protocol.
     pub protocol: PlayitProtocol,
+    /// Playit's semantic tunnel type, when the account API supplies one.
+    pub tunnel_type: Option<String>,
+    /// Agent currently assigned to the tunnel, when known.
+    pub agent_id: Option<String>,
     /// Local bind address, when supplied by the Playit service.
     pub local_address: Option<String>,
     /// Local destination port, when supplied by the Playit service.

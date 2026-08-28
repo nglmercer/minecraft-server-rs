@@ -279,9 +279,17 @@ export function Playit() {
                   <div class="min-w-0 space-y-1">
                     <p class="font-medium">{server?.name ?? tunnel.name ?? t("playit.unmanaged")}</p>
                     <p class="text-xs text-fg-muted">
-                      {tunnel.protocol.toUpperCase()} · {tunnel.destination}
+                      {tunnel.tunnel_type === "minecraft-java"
+                        ? "Minecraft Java"
+                        : tunnel.protocol.toUpperCase()}
+                      {tunnel.destination && ` · ${tunnel.destination}`}
                       {tunnel.disabled && ` · ${t("playit.disabled")}`}
                     </p>
+                    {tunnel.agent_id && (
+                      <p class="text-xs text-fg-muted">
+                        {t("playit.agent")}: <span class="font-mono">{tunnel.agent_id}</span>
+                      </p>
+                    )}
                     {tunnel.disabled_reason && (
                       <p class="text-xs text-amber-300">{tunnel.disabled_reason}</p>
                     )}

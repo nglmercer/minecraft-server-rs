@@ -21,11 +21,11 @@ tracing = "0.1"
 async-trait = "0.1"
 playit-ipc = {
     git = "https://github.com/nglmercer/playit-agent",
-    rev = "42c046287d373bb548d9891d4766f3c47406aed2"
+    rev = "2b220469341cfcd2bd9f63aa06fee1518ae58345"
 }
 playit-runtime = {
     git = "https://github.com/nglmercer/playit-agent",
-    rev = "42c046287d373bb548d9891d4766f3c47406aed2"
+    rev = "2b220469341cfcd2bd9f63aa06fee1518ae58345"
 }
 
 [profile.release]

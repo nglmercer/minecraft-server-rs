@@ -56,6 +56,8 @@ export interface PlayitTunnel {
   display_address: string;
   destination: string;
   protocol: PlayitProtocol;
+  tunnel_type: string | null;
+  agent_id: string | null;
   local_address: string | null;
   local_port: number | null;
   disabled: boolean;
