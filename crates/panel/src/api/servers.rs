@@ -467,7 +467,6 @@ async fn power(
     let _server_lock = state.server_mutation_lock.lock().await;
     authorized(&state, &identity, &id).await?;
     let guardian = state.guardian(&id).await?;
-    let _resource_lock = guardian.lock_resources().await;
 
     match body.action {
         PowerAction::Start => guardian.start().await?,
@@ -547,4 +546,81 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/{id}/command", post(command))
         .route("/{id}/reinstall", post(reinstall))
         .route("/{id}/logs", get(logs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::PlayitMode;
+    use std::time::Duration;
+
+    fn operator() -> Identity {
+        Identity {
+            username: "operator".into(),
+            admin: true,
+            servers: Vec::new(),
+        }
+    }
+
+    async fn power_cancels_preparation(action: PowerAction) {
+        let data_dir = tempfile::tempdir().unwrap();
+        let state = crate::state::AppState::bootstrap(data_dir.path(), PlayitMode::External)
+            .await
+            .unwrap();
+        let record = ServerRecord {
+            id: "server-1".into(),
+            name: "Server".into(),
+            config: ServerConfig::paper(state.server_dir("server-1"), "1.21.8"),
+            policy: GuardianConfig::default(),
+            playit: None,
+            created_at: "2026-08-29T00:00:00Z".into(),
+        };
+        state
+            .store
+            .update(|data| data.servers.push(record.clone()))
+            .await
+            .unwrap();
+        let guardian = state.insert_guardian(&record).await;
+        let resource_lock = guardian.lock_resources().await;
+
+        let started = power(
+            State(Arc::clone(&state)),
+            operator(),
+            Path(record.id.clone()),
+            Json(PowerRequest {
+                action: PowerAction::Start,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(started.0.status, guardian::ServerStatus::Preparing);
+
+        let stopped = tokio::time::timeout(
+            Duration::from_secs(1),
+            power(
+                State(Arc::clone(&state)),
+                operator(),
+                Path(record.id.clone()),
+                Json(PowerRequest { action }),
+            ),
+        )
+        .await
+        .expect("power cancellation must not wait for the resource lock")
+        .unwrap();
+        assert_eq!(stopped.0.status, guardian::ServerStatus::Offline);
+
+        drop(resource_lock);
+        assert!(guardian.wait_for_settled(Duration::from_secs(1)).await);
+        state.playit.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn api_stop_can_cancel_preparation_behind_a_resource_lock() {
+        power_cancels_preparation(PowerAction::Stop).await;
+    }
+
+    #[tokio::test]
+    async fn api_kill_can_cancel_preparation_behind_a_resource_lock() {
+        power_cancels_preparation(PowerAction::Kill).await;
+    }
 }

@@ -75,6 +75,8 @@ struct RunState {
     next_preparation_id: u64,
     /// Incremented on every spawn; a supervisor whose generation is stale exits quietly.
     generation: u64,
+    /// Prevents new starts while the owning panel is shutting down.
+    shutting_down: bool,
 }
 
 /// A point-in-time view of a server, cheap enough to serialise on every poll.
@@ -280,7 +282,7 @@ impl Guardian {
         let task = {
             let mut state = self.state.lock().await;
             let current = state.status.unwrap_or(ServerStatus::Offline);
-            if current.is_running() || current == ServerStatus::Preparing {
+            if state.shutting_down || current.is_running() || current == ServerStatus::Preparing {
                 return Err(Error::InvalidTransition {
                     current: current.as_str(),
                     action: "reinstall",
@@ -385,7 +387,7 @@ impl Guardian {
         let task = {
             let mut state = self.state.lock().await;
             let current = state.status.unwrap_or(ServerStatus::Offline);
-            if !may_start(current) {
+            if state.shutting_down || !may_start(current) {
                 return Err(Error::InvalidTransition {
                     current: current.as_str(),
                     action: "start",
@@ -423,35 +425,54 @@ impl Guardian {
         mut cancel: watch::Receiver<bool>,
         preparation_id: u64,
     ) {
-        let _resource_lock = self.lock_resources().await;
-        let environment = match self.environment().await {
-            Some(environment) => Ok(environment),
-            None => {
-                let limit = Duration::from_secs(self.policy().await.prepare_timeout_secs);
-                let preparation = tokio::time::timeout(limit, self.prepare());
-                tokio::pin!(preparation);
-                tokio::select! {
-                    result = &mut preparation => match result {
-                        Ok(result) => result,
-                        Err(_) => Err(Error::PrepareTimedOut(limit.as_secs())),
-                    },
-                    changed = cancel.changed() => {
-                        if changed.is_ok() && *cancel.borrow() {
-                            Err(Error::StartCancelled)
-                        } else {
-                            match preparation.await {
-                                Ok(result) => result,
-                                Err(_) => Err(Error::PrepareTimedOut(limit.as_secs())),
-                            }
-                        }
-                    },
+        // A file operation can own this lock for a long time. Cancellation must
+        // wake a start that is waiting for it, otherwise Stop/Kill can report
+        // success while the detached start task later launches a JVM anyway.
+        let resource_lock = tokio::select! {
+            lock = self.lock_resources() => Some(lock),
+            changed = cancel.changed() => {
+                if changed.is_ok() && *cancel.borrow() {
+                    None
+                } else {
+                    Some(self.lock_resources().await)
                 }
-            }
+            },
         };
 
-        let outcome = match environment {
-            Ok(environment) => self.launch(environment, preparation_id).await,
-            Err(e) => Err(e),
+        let outcome = match resource_lock {
+            None => Err(Error::StartCancelled),
+            Some(_resource_lock) if *cancel.borrow() => Err(Error::StartCancelled),
+            Some(_resource_lock) => {
+                let environment = match self.environment().await {
+                    Some(environment) => Ok(environment),
+                    None => {
+                        let limit = Duration::from_secs(self.policy().await.prepare_timeout_secs);
+                        let preparation = tokio::time::timeout(limit, self.prepare());
+                        tokio::pin!(preparation);
+                        tokio::select! {
+                            result = &mut preparation => match result {
+                                Ok(result) => result,
+                                Err(_) => Err(Error::PrepareTimedOut(limit.as_secs())),
+                            },
+                            changed = cancel.changed() => {
+                                if changed.is_ok() && *cancel.borrow() {
+                                    Err(Error::StartCancelled)
+                                } else {
+                                    match preparation.await {
+                                        Ok(result) => result,
+                                        Err(_) => Err(Error::PrepareTimedOut(limit.as_secs())),
+                                    }
+                                }
+                            },
+                        }
+                    }
+                };
+
+                match environment {
+                    Ok(environment) => self.launch(environment, preparation_id).await,
+                    Err(error) => Err(error),
+                }
+            }
         };
 
         if let Err(e) = outcome {
@@ -555,8 +576,9 @@ impl Guardian {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            // The JVM outlives a panel restart on purpose: an operator updating
-            // the panel should not disconnect everyone playing.
+            // Dropping this handle must not kill the JVM by itself. Normal panel
+            // shutdown stops every guardian explicitly; Linux bubblewrap's
+            // --die-with-parent remains a crash-cleanup fallback.
             .kill_on_drop(false);
 
         for (key, value) in sanitized_environment(std::env::vars_os()) {
@@ -592,6 +614,7 @@ impl Guardian {
             if state.preparation_id != preparation_id
                 || state.status != Some(ServerStatus::Preparing)
                 || state.intentional
+                || state.shutting_down
             {
                 let _ = child.start_kill();
                 return Err(Error::StartCancelled);
@@ -706,6 +729,11 @@ impl Guardian {
                 guardian.set_status(ServerStatus::Crashed).await;
                 guardian.emit(ServerEvent::Crashed { code, attempt });
 
+                let shutting_down = guardian.state.lock().await.shutting_down;
+                if shutting_down {
+                    return;
+                }
+
                 let policy = guardian.policy().await;
                 if !policy.auto_restart {
                     return;
@@ -728,9 +756,14 @@ impl Guardian {
                     .await;
                 tokio::time::sleep(Duration::from_secs(policy.retry_delay_secs)).await;
 
-                let still_crashed =
-                    guardian.state.lock().await.status == Some(ServerStatus::Crashed);
-                if !still_crashed {
+                let (still_crashed, shutting_down) = {
+                    let state = guardian.state.lock().await;
+                    (
+                        state.status == Some(ServerStatus::Crashed),
+                        state.shutting_down,
+                    )
+                };
+                if !still_crashed || shutting_down {
                     return;
                 }
 
@@ -856,6 +889,36 @@ impl Guardian {
         Ok(())
     }
 
+    /// Stop this server as part of panel shutdown and prevent auto-restarts.
+    pub async fn shutdown(&self) -> Result<()> {
+        let (should_stop, changed) = {
+            let mut state = self.state.lock().await;
+            state.shutting_down = true;
+            if state.status == Some(ServerStatus::Crashed) {
+                state.status = Some(ServerStatus::Offline);
+                (false, true)
+            } else {
+                (
+                    state.status.is_some_and(|status| {
+                        status == ServerStatus::Preparing || status.is_running()
+                    }),
+                    false,
+                )
+            }
+        };
+
+        if changed {
+            self.emit(ServerEvent::Status {
+                status: ServerStatus::Offline,
+            });
+        }
+        if should_stop {
+            self.stop().await
+        } else {
+            Ok(())
+        }
+    }
+
     /// Wait until the child handle has been reaped by the supervisor.
     ///
     /// This is used by callers that are about to drop the guardian. Since
@@ -865,6 +928,28 @@ impl Guardian {
         let deadline = Instant::now() + timeout;
         loop {
             if self.state.lock().await.child.is_none() {
+                return true;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            tokio::time::sleep(REAP_INTERVAL.min(remaining)).await;
+        }
+    }
+
+    /// Wait until neither a child process nor a preparation task remains.
+    ///
+    /// This is stronger than [`Guardian::wait_for_exit`] and is used before a
+    /// guardian is dropped or the panel process exits.
+    pub async fn wait_for_settled(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let settled = {
+                let state = self.state.lock().await;
+                state.child.is_none() && state.preparing.is_none()
+            };
+            if settled {
                 return true;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -1063,6 +1148,19 @@ mod tests {
         assert!(validate_command("").is_err());
         assert!(validate_command("say\nstop").is_err());
         assert!(validate_command(&"x".repeat(MAX_COMMAND_BYTES + 1)).is_err());
+    }
+
+    #[tokio::test]
+    async fn shutdown_prevents_new_lifecycle_work() {
+        let guardian = Guardian::new(
+            ServerConfig::paper("/tmp/mcpanel-shutdown", "1.21.8"),
+            GuardianConfig::default(),
+            "/tmp/mcpanel-shutdown",
+        );
+
+        guardian.shutdown().await.unwrap();
+        assert!(guardian.start().await.is_err());
+        assert!(guardian.reinstall().await.is_err());
     }
 
     #[tokio::test]

@@ -19,7 +19,7 @@ Browser download and console flows use short-lived scoped tickets rather than lo
 
 ## Process isolation
 
-On Linux, `bwrap` places each Minecraft process in a separate PID/filesystem view, exposes only its server directory and the selected JDK read-only, and uses a server-local home and temporary directory. On macOS the available `sandbox-exec` profile provides a comparable filesystem boundary. If the helper is absent, or on Windows where this binary does not currently create a kernel job/container identity, the panel refuses to start Minecraft unless the operator explicitly passes `--allow-unsandboxed-servers` or sets `MCPANEL_ALLOW_UNSANDBOXED_SERVERS=true`. With that acknowledgement, the panel still sanitizes environment variables and uses race-resistant server paths, but Java runs as the panel's OS user. Filesystem/API containment is not the same as OS tenant isolation: plugins and mods execute arbitrary JVM code, and network access is not strongly isolated by this binary. CPU, process-count, file-descriptor, and native-memory limits are not a substitute for cgroups/job objects on those platforms.
+On Linux, `bwrap` places each Minecraft process in a separate PID/filesystem view, exposes its server directory and the selected JDK, and mounts the host runtime trees `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, and `/etc` read-only when present. The process gets a server-local home and temporary directory; the panel data directory and other servers are not mounted. These system-tree mounts let Java resolve its runtime and certificates, but they also allow plugins to inspect files in those trees that the panel OS account can read, and network access remains available. On macOS the available `sandbox-exec` profile provides a comparable filesystem boundary. If the helper is absent, or on Windows where this binary does not currently create a kernel job/container identity, the panel refuses to start Minecraft unless the operator explicitly passes `--allow-unsandboxed-servers` or sets `MCPANEL_ALLOW_UNSANDBOXED_SERVERS=true`. With that acknowledgement, the panel still sanitizes environment variables and uses race-resistant server paths, but Java runs as the panel's OS user. Filesystem/API containment is not the same as OS tenant isolation: plugins and mods execute arbitrary JVM code. CPU, process-count, file-descriptor, and native-memory limits are not a substitute for cgroups/job objects on those platforms.
 
 On Linux, install `bubblewrap` (`bwrap`) so Minecraft processes receive the strongest sandbox this binary can use. Do not use the explicit unsandboxed acknowledgement for mutually untrusted operators unless an external OS/container policy supplies the missing tenant boundary.
 
@@ -35,7 +35,25 @@ mcpanel --data-dir /var/lib/mcpanel --bind 127.0.0.1:8080
 
 Terminate HTTPS in a reverse proxy, forward only to that loopback listener, and configure the proxy to pass WebSocket upgrades. For example, a Caddy `reverse_proxy 127.0.0.1:8080` site provides TLS and WebSocket forwarding by default. Do not expose `0.0.0.0:8080` directly. The `--allow-insecure-http` option exists for development or an explicitly isolated network and is not a production security control.
 
+By default the panel uses the direct TCP peer for login rate limiting and does
+not trust forwarded client-IP headers. When the reverse proxy is the direct
+peer, configure its address explicitly, for example:
+
+```sh
+mcpanel --trusted-proxy 127.0.0.1
+```
+
+The proxy must overwrite `X-Forwarded-For`, `Forwarded`, and
+`X-Forwarded-Proto` at its public boundary rather than append untrusted client
+values. Never add an address that untrusted users can connect from. If trusted
+proxy configuration is not possible, apply login rate limiting in the proxy as
+well, because all clients will otherwise share the proxy's rate-limit bucket.
+
 The data directory should be owned by the panel service account with mode `0700`; `panel.json` and the embedded Playit secret are written with owner-only permissions on Unix. Do not put backups or the data directory in a shared directory, and do not pass credentials through command-line arguments or logs.
+
+On a normal panel shutdown, managed Minecraft processes are asked to save and
+stop before Playit and the panel exit. Linux `bwrap --die-with-parent` remains
+as a crash fallback; it should not be relied on as the normal shutdown path.
 
 ## Secrets handling
 

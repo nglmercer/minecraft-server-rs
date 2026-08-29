@@ -4,7 +4,8 @@ use anyhow::{Context, Result};
 use clap::ValueEnum;
 use guardian::{Guardian, ScopedFs};
 use playit_integration::PlayitManager;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{Mutex, OwnedMutexGuard, RwLock, Semaphore};
@@ -52,6 +53,8 @@ pub struct AppState {
     pub download_slots: Arc<Semaphore>,
     /// Bounds live WebSocket connections and their associated tasks.
     pub websocket_slots: Arc<Semaphore>,
+    /// Listener peer addresses whose forwarded client headers are trusted.
+    pub(crate) trusted_proxies: Arc<HashSet<IpAddr>>,
     /// Serializes server record/guardian/Playit mutations that must be observed
     /// as one lifecycle.  In particular, a delete cannot race an attachment
     /// into leaving an untracked public tunnel behind.
@@ -94,9 +97,28 @@ impl AppState {
         limits: ResourceLimits,
         allow_unsandboxed_servers: bool,
     ) -> Result<Arc<Self>> {
+        Self::bootstrap_with_limits_and_sandbox_and_trusted_proxies(
+            data_dir,
+            playit_mode,
+            limits,
+            allow_unsandboxed_servers,
+            Vec::new(),
+        )
+        .await
+    }
+
+    /// Build state with explicit limits, sandbox policy, and trusted proxy IPs.
+    pub async fn bootstrap_with_limits_and_sandbox_and_trusted_proxies(
+        data_dir: impl Into<PathBuf>,
+        playit_mode: PlayitMode,
+        limits: ResourceLimits,
+        allow_unsandboxed_servers: bool,
+        trusted_proxies: Vec<IpAddr>,
+    ) -> Result<Arc<Self>> {
         limits.validate()?;
         let data_dir = data_dir.into();
         let sandbox_policy = guardian::sandbox::SandboxPolicy::new(allow_unsandboxed_servers);
+        let trusted_proxies = Arc::new(trusted_proxies.into_iter().collect::<HashSet<_>>());
         tokio::fs::create_dir_all(&data_dir)
             .await
             .with_context(|| format!("creating {}", data_dir.display()))?;
@@ -183,6 +205,7 @@ impl AppState {
             websocket_slots: Arc::new(Semaphore::new(
                 crate::limits::DEFAULT_MAX_CONCURRENT_WEBSOCKETS,
             )),
+            trusted_proxies,
             server_mutation_lock: Mutex::new(()),
         }))
     }
@@ -225,7 +248,7 @@ impl AppState {
     pub async fn remove_guardian_locked(&self, id: &str, guardian: Arc<Guardian>) {
         let _ = guardian.stop().await;
         if !guardian
-            .wait_for_exit(std::time::Duration::from_secs(10))
+            .wait_for_settled(std::time::Duration::from_secs(10))
             .await
         {
             tracing::error!(
@@ -235,6 +258,42 @@ impl AppState {
             return;
         }
         self.guardians.write().await.remove(id);
+    }
+
+    /// Gracefully stop every managed server before the panel and its sandbox
+    /// parents exit.  A hard kill is used only when the configured graceful
+    /// stop takes longer than the panel shutdown budget.
+    pub async fn shutdown_servers(&self) {
+        let guardians = self
+            .guardians
+            .read()
+            .await
+            .iter()
+            .map(|(id, guardian)| (id.clone(), Arc::clone(guardian)))
+            .collect::<Vec<_>>();
+
+        futures_util::future::join_all(guardians.into_iter().map(|(id, guardian)| async move {
+            match tokio::time::timeout(std::time::Duration::from_secs(30), guardian.shutdown())
+                .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::error!(server = %id, error = ?error, "server shutdown failed");
+                }
+                Err(_) => {
+                    tracing::error!(server = %id, "server shutdown timed out; killing process");
+                    let _ = guardian.kill().await;
+                }
+            }
+
+            if !guardian
+                .wait_for_settled(std::time::Duration::from_secs(10))
+                .await
+            {
+                tracing::error!(server = %id, "server did not settle before panel exit");
+            }
+        }))
+        .await;
     }
 
     /// The on-disk directory for `id`, whether or not it exists yet.

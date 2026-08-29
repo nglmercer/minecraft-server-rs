@@ -20,7 +20,7 @@ use tokio::sync::watch;
 /// Configuration used to create the MCP Panel tray icon.
 #[derive(Clone, Debug)]
 pub struct TrayConfig {
-    /// The loopback URL opened by the tray's Open Panel action.
+    /// The URL opened by the tray's Open Panel action.
     pub panel_url: String,
 }
 

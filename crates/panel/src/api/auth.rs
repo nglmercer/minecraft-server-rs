@@ -6,7 +6,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
+use std::collections::HashSet;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use crate::auth::{
@@ -46,11 +47,81 @@ impl From<&Identity> for UserView {
     }
 }
 
-fn client_key(peer: Option<&Extension<ConnectInfo<SocketAddr>>>) -> String {
-    // ConnectInfo is the address observed by the listener. Forwarded headers
-    // are intentionally not consulted because no trusted-proxy policy exists.
-    peer.map(|Extension(ConnectInfo(address))| address.ip().to_string())
-        .unwrap_or_else(|| "unknown".into())
+fn client_key(
+    peer: Option<&Extension<ConnectInfo<SocketAddr>>>,
+    headers: &HeaderMap,
+    trusted_proxies: &HashSet<IpAddr>,
+) -> String {
+    let Some(peer_ip) = peer_ip(peer) else {
+        return "unknown".into();
+    };
+
+    if trusted_proxies.contains(&peer_ip) {
+        if let Some(forwarded) = forwarded_client_ip(headers, trusted_proxies) {
+            return forwarded.to_string();
+        }
+    }
+    peer_ip.to_string()
+}
+
+fn peer_ip(peer: Option<&Extension<ConnectInfo<SocketAddr>>>) -> Option<IpAddr> {
+    peer.map(|Extension(ConnectInfo(address))| address.ip())
+}
+
+/// Resolve the nearest non-proxy address from standard proxy headers.
+///
+/// The immediate TCP peer must already be in the trusted-proxy set before this
+/// function is called. Walking from right to left also avoids accepting an
+/// address a client prepended when a proxy appends its own address.
+fn forwarded_client_ip(headers: &HeaderMap, trusted_proxies: &HashSet<IpAddr>) -> Option<IpAddr> {
+    let x_forwarded_for = headers
+        .get_all("x-forwarded-for")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .filter_map(parse_ip_token)
+        .collect::<Vec<_>>();
+    if let Some(address) = nearest_untrusted(x_forwarded_for, trusted_proxies) {
+        return Some(address);
+    }
+
+    let forwarded = headers
+        .get_all("forwarded")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .filter_map(|element| {
+            element.split(';').find_map(|parameter| {
+                let (name, value) = parameter.split_once('=')?;
+                name.trim()
+                    .eq_ignore_ascii_case("for")
+                    .then(|| parse_ip_token(value))
+                    .flatten()
+            })
+        })
+        .collect::<Vec<_>>();
+    nearest_untrusted(forwarded, trusted_proxies)
+}
+
+fn nearest_untrusted(candidates: Vec<IpAddr>, trusted_proxies: &HashSet<IpAddr>) -> Option<IpAddr> {
+    candidates
+        .into_iter()
+        .rev()
+        .find(|address| !trusted_proxies.contains(address))
+}
+
+fn parse_ip_token(token: &str) -> Option<IpAddr> {
+    let token = token.trim().trim_matches('"');
+    if let Some(bracketed) = token.strip_prefix('[') {
+        let end = bracketed.find(']')?;
+        return bracketed[..end].parse().ok();
+    }
+    if let Ok(address) = token.parse() {
+        return Some(address);
+    }
+    let (host, port) = token.rsplit_once(':')?;
+    port.parse::<u16>().ok()?;
+    host.parse().ok()
 }
 
 async fn login(
@@ -59,11 +130,10 @@ async fn login(
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     Json(body): Json<LoginRequest>,
 ) -> ApiResult<Response> {
-    // X-Forwarded-For is intentionally not trusted here: unless a trusted
-    // proxy is configured, a caller can forge it and evade an IP limiter.
-    // Behind a proxy all requests share the proxy address, while the
-    // username limiter and global semaphore still provide a second boundary.
-    let ip = client_key(peer.as_ref());
+    // Forwarded client headers are only considered when the immediate TCP peer
+    // is explicitly configured as trusted. The proxy must overwrite, rather
+    // than append to, these headers at its public boundary.
+    let ip = client_key(peer.as_ref(), &headers, &state.trusted_proxies);
     if state
         .login_limiter
         .retry_after(&ip, &body.username)
@@ -106,11 +176,24 @@ async fn login(
         }),
     )
         .into_response();
-    append_login_cookies(&mut response, &headers, &token)?;
+    append_login_cookies(
+        &mut response,
+        &headers,
+        peer.as_ref(),
+        &state.trusted_proxies,
+        &token,
+    )?;
     Ok(response)
 }
 
-fn secure_cookie(headers: &HeaderMap) -> bool {
+fn secure_cookie(
+    headers: &HeaderMap,
+    peer: Option<&Extension<ConnectInfo<SocketAddr>>>,
+    trusted_proxies: &HashSet<IpAddr>,
+) -> bool {
+    if !peer_ip(peer).is_some_and(|address| trusted_proxies.contains(&address)) {
+        return false;
+    }
     headers
         .get("x-forwarded-proto")
         .and_then(|value| value.to_str().ok())
@@ -137,9 +220,11 @@ fn cookie_header(name: &str, value: &str, http_only: bool, secure: bool) -> ApiR
 fn append_login_cookies(
     response: &mut Response,
     headers: &HeaderMap,
+    peer: Option<&Extension<ConnectInfo<SocketAddr>>>,
+    trusted_proxies: &HashSet<IpAddr>,
     token: &str,
 ) -> ApiResult<()> {
-    let secure = secure_cookie(headers);
+    let secure = secure_cookie(headers, peer, trusted_proxies);
     let csrf = generate_token();
     response.headers_mut().append(
         header::SET_COOKIE,
@@ -165,12 +250,16 @@ fn clear_cookie(name: &str, secure: bool) -> ApiResult<HeaderValue> {
 }
 
 /// Revoke the presented session and clear browser credentials.
-async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiResult<Response> {
+async fn logout(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+) -> ApiResult<Response> {
     if let Some(token) = token_from_headers(&headers) {
         state.sessions.revoke(&token).await;
     }
     let mut response = Json(serde_json::json!({ "ok": true })).into_response();
-    let secure = secure_cookie(&headers);
+    let secure = secure_cookie(&headers, peer.as_ref(), &state.trusted_proxies);
     response
         .headers_mut()
         .append(header::SET_COOKIE, clear_cookie(SESSION_COOKIE, secure)?);
@@ -267,9 +356,23 @@ mod tests {
 
     #[test]
     fn limiter_keys_use_only_the_peer_ip() {
-        let first = client_key(Some(&peer("203.0.113.10:50101".parse().unwrap())));
-        let second = client_key(Some(&peer("203.0.113.10:50102".parse().unwrap())));
-        let other = client_key(Some(&peer("203.0.113.11:50101".parse().unwrap())));
+        let headers = HeaderMap::new();
+        let trusted = HashSet::new();
+        let first = client_key(
+            Some(&peer("203.0.113.10:50101".parse().unwrap())),
+            &headers,
+            &trusted,
+        );
+        let second = client_key(
+            Some(&peer("203.0.113.10:50102".parse().unwrap())),
+            &headers,
+            &trusted,
+        );
+        let other = client_key(
+            Some(&peer("203.0.113.11:50101".parse().unwrap())),
+            &headers,
+            &trusted,
+        );
 
         assert_eq!(first, "203.0.113.10");
         assert_eq!(first, second);
@@ -279,9 +382,23 @@ mod tests {
     #[test]
     fn failed_attempts_on_different_ports_share_the_same_ip_cooldown() {
         let limiter = LoginLimiter::default();
-        let first = client_key(Some(&peer("203.0.113.10:50101".parse().unwrap())));
-        let second = client_key(Some(&peer("203.0.113.10:50102".parse().unwrap())));
-        let third = client_key(Some(&peer("203.0.113.10:50103".parse().unwrap())));
+        let headers = HeaderMap::new();
+        let trusted = HashSet::new();
+        let first = client_key(
+            Some(&peer("203.0.113.10:50101".parse().unwrap())),
+            &headers,
+            &trusted,
+        );
+        let second = client_key(
+            Some(&peer("203.0.113.10:50102".parse().unwrap())),
+            &headers,
+            &trusted,
+        );
+        let third = client_key(
+            Some(&peer("203.0.113.10:50103".parse().unwrap())),
+            &headers,
+            &trusted,
+        );
 
         // Use different usernames so the assertion specifically exercises the
         // IP bucket rather than the username bucket.
@@ -292,5 +409,73 @@ mod tests {
             limiter.retry_after(&third, "unrelated-user").is_some(),
             "failures from one IP must accumulate across source ports"
         );
+    }
+
+    #[test]
+    fn trusted_proxy_headers_identify_the_real_client() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "198.51.100.10, 127.0.0.1".parse().unwrap(),
+        );
+        let trusted = ["127.0.0.1".parse().unwrap()].into_iter().collect();
+
+        assert_eq!(
+            client_key(
+                Some(&peer("127.0.0.1:8080".parse().unwrap())),
+                &headers,
+                &trusted,
+            ),
+            "198.51.100.10"
+        );
+    }
+
+    #[test]
+    fn untrusted_peers_cannot_forge_forwarded_client_ips() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "198.51.100.10".parse().unwrap());
+
+        assert_eq!(
+            client_key(
+                Some(&peer("203.0.113.10:8080".parse().unwrap())),
+                &headers,
+                &HashSet::new(),
+            ),
+            "203.0.113.10"
+        );
+    }
+
+    #[test]
+    fn forwarded_header_supports_ipv6_and_ports() {
+        let mut headers = HeaderMap::new();
+        headers.insert("forwarded", "for=\"[2001:db8::10]:443\"".parse().unwrap());
+        let trusted = ["127.0.0.1".parse().unwrap()].into_iter().collect();
+
+        assert_eq!(
+            client_key(
+                Some(&peer("127.0.0.1:8080".parse().unwrap())),
+                &headers,
+                &trusted,
+            ),
+            "2001:db8::10"
+        );
+    }
+
+    #[test]
+    fn forwarded_protocol_is_used_only_for_a_trusted_proxy() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-proto", "https".parse().unwrap());
+        let trusted = ["127.0.0.1".parse().unwrap()].into_iter().collect();
+
+        assert!(!secure_cookie(
+            &headers,
+            Some(&peer("203.0.113.10:8080".parse().unwrap())),
+            &trusted,
+        ));
+        assert!(secure_cookie(
+            &headers,
+            Some(&peer("127.0.0.1:8080".parse().unwrap())),
+            &trusted,
+        ));
     }
 }

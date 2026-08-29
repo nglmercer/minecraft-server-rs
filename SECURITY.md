@@ -53,13 +53,26 @@ special files, traversal, and unbounded expansion. Download and console
 browser flows use short-lived scoped tickets rather than long-lived session
 tokens in URLs.
 
-When `bwrap` or macOS sandboxing is active, Minecraft receives only its server
-directory and required runtime files. Filesystem/API containment is not the
+When `bwrap` is active, Minecraft receives its server directory and required
+JDK, along with read-only host runtime trees (`/usr`, `/bin`, `/sbin`, `/lib`,
+`/lib64`, and `/etc` when present). Plugins can inspect files in those trees
+that the panel account can read, and network access is available. macOS uses
+its available `sandbox-exec` profile. Filesystem/API containment is not the
 same as OS tenant isolation: plugins and mods execute arbitrary JVM code. If
 unsandboxed execution is explicitly acknowledged, Java code runs with the
-panel service account's remaining OS authority. Network access is also not
-strongly isolated by this binary. CPU, process, memory, and native-resource
-limits require OS-level controls such as cgroups, containers, or job objects.
+panel service account's remaining OS authority. CPU, process, memory, and
+native-resource limits require OS-level controls such as cgroups, containers,
+or job objects.
+
+On a normal panel shutdown, managed Minecraft processes are asked to save and
+stop before Playit and the panel exit. Linux `bwrap --die-with-parent` is a
+crash fallback, not the normal lifecycle policy.
+
+When deploying behind a reverse proxy, pass its listener address with
+`--trusted-proxy` (or `MCPANEL_TRUSTED_PROXIES`) only if the proxy overwrites
+the `X-Forwarded-For`, `Forwarded`, and `X-Forwarded-Proto` headers. Without
+that configuration all clients share the proxy's login rate-limit bucket;
+never trust forwarded headers from an untrusted peer.
 
 ## Secrets handling
 

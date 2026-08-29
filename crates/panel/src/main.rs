@@ -23,12 +23,13 @@ mod web;
 
 use anyhow::{Context, Result};
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{header, HeaderMap, HeaderValue, Request};
 use axum::middleware::Next;
 use axum::response::Response;
 use axum::Router;
 use clap::Parser;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -70,6 +71,16 @@ struct Args {
     /// the host helper is unavailable. This weakens tenant isolation.
     #[arg(long, env = "MCPANEL_ALLOW_UNSANDBOXED_SERVERS")]
     allow_unsandboxed_servers: bool,
+
+    /// Trust forwarded client-IP headers from this proxy peer. Repeat the
+    /// option or separate values with commas; never include untrusted peers.
+    #[arg(
+        long,
+        value_name = "IP",
+        value_delimiter = ',',
+        env = "MCPANEL_TRUSTED_PROXIES"
+    )]
+    trusted_proxies: Vec<IpAddr>,
 
     /// Maximum multipart upload request size.
     #[arg(
@@ -177,11 +188,12 @@ async fn main() -> Result<()> {
         max_server_memory_mb,
     };
     limits.validate()?;
-    let state = AppState::bootstrap_with_limits_and_sandbox(
+    let state = AppState::bootstrap_with_limits_and_sandbox_and_trusted_proxies(
         &args.data_dir,
         args.playit_mode,
         limits,
         args.allow_unsandboxed_servers,
+        args.trusted_proxies,
     )
     .await?;
 
@@ -203,7 +215,10 @@ async fn main() -> Result<()> {
                     )
                 }),
             )
-            .layer(axum::middleware::from_fn(security_headers));
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                security_headers,
+            ));
 
         if args.dev_cors {
             app = app.layer(CorsLayer::very_permissive());
@@ -219,10 +234,7 @@ async fn main() -> Result<()> {
         let local_addr = listener
             .local_addr()
             .context("reading the panel listener address")?;
-        let tray = match tray::start(TrayConfig::new(format!(
-            "http://127.0.0.1:{}",
-            local_addr.port()
-        ))) {
+        let tray = match tray::start(TrayConfig::new(panel_url(local_addr))) {
             Ok(tray) => Some(tray),
             Err(error) => {
                 tracing::warn!(error = %error, "system tray is unavailable; the panel will continue without it");
@@ -251,6 +263,8 @@ async fn main() -> Result<()> {
         serve_result
     }
     .await;
+
+    state.shutdown_servers().await;
 
     if let Err(error) = state.playit.shutdown().await {
         tracing::error!(error = %error, "failed to shut down Playit runtime cleanly");
@@ -337,11 +351,33 @@ async fn shutdown_with_tray(tray_exit: Option<watch::Receiver<bool>>) {
     }
 }
 
-async fn security_headers(request: Request<Body>, next: Next) -> Response {
+fn panel_url(address: SocketAddr) -> String {
+    match address {
+        SocketAddr::V4(address) if address.ip().is_unspecified() => {
+            format!("http://127.0.0.1:{}", address.port())
+        }
+        SocketAddr::V6(address) if address.ip().is_unspecified() => {
+            format!("http://[::1]:{}", address.port())
+        }
+        SocketAddr::V4(address) => format!("http://{}", address),
+        SocketAddr::V6(address) => format!("http://[{}]:{}", address.ip(), address.port()),
+    }
+}
+
+async fn security_headers(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let peer_is_trusted = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .is_some_and(|ConnectInfo(address)| state.trusted_proxies.contains(&address.ip()));
     let secure = request
         .headers()
         .get("x-forwarded-proto")
         .and_then(|value| value.to_str().ok())
+        .filter(|_| peer_is_trusted)
         .is_some_and(|value| {
             value
                 .split(',')
@@ -405,6 +441,27 @@ mod tests {
 
         add_security_headers(&mut headers, true);
         assert!(headers.get(header::STRICT_TRANSPORT_SECURITY).is_some());
+    }
+
+    #[test]
+    fn tray_urls_follow_the_bound_listener_address() {
+        assert_eq!(
+            panel_url("127.0.0.1:8080".parse().unwrap()),
+            "http://127.0.0.1:8080"
+        );
+        assert_eq!(
+            panel_url("0.0.0.0:8080".parse().unwrap()),
+            "http://127.0.0.1:8080"
+        );
+        assert_eq!(
+            panel_url("[::1]:8080".parse().unwrap()),
+            "http://[::1]:8080"
+        );
+        assert_eq!(panel_url("[::]:8080".parse().unwrap()), "http://[::1]:8080");
+        assert_eq!(
+            panel_url("192.0.2.10:8080".parse().unwrap()),
+            "http://192.0.2.10:8080"
+        );
     }
 
     #[tokio::test]

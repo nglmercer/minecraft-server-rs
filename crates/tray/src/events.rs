@@ -36,9 +36,15 @@ pub(crate) fn run(
         }
     };
     let proxy = event_loop.create_proxy();
-    if ready_tx.send(Ok(proxy.clone())).is_err() {
-        return;
-    }
+
+    let tray_menu = match menu::build() {
+        Ok(menu) => menu,
+        Err(error) => {
+            let _ = ready_tx.send(Err(error.clone()));
+            tracing::error!(error = %error, "could not create the MCP Panel tray menu");
+            return;
+        }
+    };
 
     let tray_proxy = proxy.clone();
     TrayIconEvent::set_event_handler(Some(move |event| {
@@ -49,16 +55,6 @@ pub(crate) fn run(
         let _ = menu_proxy.send_event(UserEvent::Menu(event));
     }));
 
-    let tray_menu = match menu::build() {
-        Ok(menu) => menu,
-        Err(error) => {
-            tracing::error!(error = %error, "could not create the MCP Panel tray menu");
-            TrayIconEvent::set_event_handler(None::<fn(TrayIconEvent)>);
-            MenuEvent::set_event_handler(None::<fn(MenuEvent)>);
-            return;
-        }
-    };
-
     let open_panel_id = tray_menu.open_panel.id().clone();
     let exit_id = tray_menu.exit.id().clone();
     let mut application = TrayApplication {
@@ -68,6 +64,8 @@ pub(crate) fn run(
         tray_icon: None,
         open_panel_id,
         exit_id,
+        proxy,
+        ready_tx: Some(ready_tx),
     };
 
     let _ = event_loop.run_app(&mut application);
@@ -83,6 +81,8 @@ struct TrayApplication {
     tray_icon: Option<TrayIcon>,
     open_panel_id: tray_icon::menu::MenuId,
     exit_id: tray_icon::menu::MenuId,
+    proxy: winit::event_loop::EventLoopProxy<UserEvent>,
+    ready_tx: Option<SyncSender<Result<winit::event_loop::EventLoopProxy<UserEvent>, String>>>,
 }
 
 impl TrayApplication {
@@ -100,8 +100,18 @@ impl TrayApplication {
                 .build()
                 .map_err(|_| icon::IconError::backend_rejected())
         }) {
-            Ok(icon) => self.tray_icon = Some(icon),
+            Ok(icon) => {
+                self.tray_icon = Some(icon);
+                if let Some(ready_tx) = self.ready_tx.take() {
+                    if ready_tx.send(Ok(self.proxy.clone())).is_err() {
+                        event_loop.exit();
+                    }
+                }
+            }
             Err(error) => {
+                if let Some(ready_tx) = self.ready_tx.take() {
+                    let _ = ready_tx.send(Err(error.to_string()));
+                }
                 tracing::error!(error = %error, "could not create the MCP Panel tray icon");
                 event_loop.exit();
             }

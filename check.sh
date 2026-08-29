@@ -49,7 +49,7 @@ if [[ ${MCPANEL_SKIP_RELEASE_BUILD:-0} == 1 ]]; then
   step "Release build (skipped by MCPANEL_SKIP_RELEASE_BUILD)"
 else
   step "Release build"
-  cargo build --release -p panel
+  cargo build --release --locked -p panel
 
 step "Embedded frontend"
 # A release binary that quietly serves the "frontend not built" page would

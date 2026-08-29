@@ -25,7 +25,7 @@ Two Linux builds are published: `linux-x86_64` (glibc) and `linux-x86_64-static`
 
 ## Sandbox per OS
 
-- **Linux:** `bwrap` (bubblewrap) gives the strongest isolation — separate PID/filesystem view, read-only JDK, server-local home/tmp. Install `bubblewrap` when hosting untrusted operators. If it is unavailable, startup requires `--allow-unsandboxed-servers` or `MCPANEL_ALLOW_UNSANDBOXED_SERVERS=true`.
+- **Linux:** `bwrap` (bubblewrap) gives the strongest isolation — separate PID/filesystem view, the server directory and JDK, plus read-only host runtime trees (`/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, and `/etc` when present), with a server-local home/tmp. Install `bubblewrap` when hosting untrusted operators; plugins can still read account-readable files in those mounted system trees and use the network. If it is unavailable, startup requires `--allow-unsandboxed-servers` or `MCPANEL_ALLOW_UNSANDBOXED_SERVERS=true`.
 - **macOS:** `sandbox-exec` provides a comparable filesystem boundary. If it is unavailable, startup requires the same explicit unsandboxed acknowledgement.
 - **Windows:** this binary has no per-server kernel sandbox or restricted OS identity, so startup requires the same explicit acknowledgement. Use a separate Windows service account, container, or job-object infrastructure per trust domain when hard isolation is required. Network access is not strongly isolated by this binary. See [Security](security.md).
 
