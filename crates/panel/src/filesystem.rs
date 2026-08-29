@@ -30,7 +30,9 @@ pub fn relative(input: &str) -> ApiResult<PathBuf> {
     if input.is_empty() {
         return Ok(PathBuf::new());
     }
-    if input.contains('\0') || input.contains('\\') {
+    let bytes = input.as_bytes();
+    let windows_drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+    if input.contains('\0') || input.contains('\\') || windows_drive {
         return Err(ApiError::BadRequest(
             "path must be relative and use forward slashes".into(),
         ));

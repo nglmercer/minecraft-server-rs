@@ -50,18 +50,18 @@ pub fn command(
 ) -> Result<(Command, SandboxMode)> {
     #[cfg(target_os = "linux")]
     {
-        return linux_command(java, directory, jar, args, find_in_path("bwrap"), policy);
+        linux_command(java, directory, jar, args, find_in_path("bwrap"), policy)
     }
     #[cfg(target_os = "macos")]
     {
-        return macos_command(
+        macos_command(
             java,
             directory,
             jar,
             args,
             find_in_path("sandbox-exec"),
             policy,
-        );
+        )
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {

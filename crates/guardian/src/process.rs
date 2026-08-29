@@ -16,6 +16,8 @@ use crate::install::Installation;
 use crate::sandbox::SandboxPolicy;
 use std::collections::VecDeque;
 use std::ffi::OsString;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -498,6 +500,19 @@ impl Guardian {
         {
             return Err(Error::InvalidConfiguration(
                 "the launch directory does not match the configured server directory".into(),
+            ));
+        }
+        let java_metadata =
+            std::fs::metadata(&env.java).map_err(|error| Error::io(&env.java, error))?;
+        if !java_metadata.is_file() {
+            return Err(Error::InvalidConfiguration(
+                "the Java launcher must be a regular file".into(),
+            ));
+        }
+        #[cfg(unix)]
+        if java_metadata.permissions().mode() & 0o111 == 0 {
+            return Err(Error::InvalidConfiguration(
+                "the Java launcher is not executable".into(),
             ));
         }
         let server_fs =

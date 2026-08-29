@@ -85,10 +85,10 @@ impl ScopedFs {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            self.dir
-                .try_clone()?
-                .into_std_file()
-                .set_permissions(std::fs::Permissions::from_mode(0o700))?;
+            self.dir.set_permissions(
+                ".",
+                cap_std::fs::Permissions::from_std(std::fs::Permissions::from_mode(0o700)),
+            )?;
         }
         Ok(())
     }
@@ -529,6 +529,22 @@ mod tests {
         fs.rename("plugins/test.txt", "plugins/renamed.txt")
             .unwrap();
         fs.remove("plugins/renamed.txt").unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_permissions_can_be_set_on_the_scoped_root() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let fs = ScopedFs::open(tmp.path()).unwrap();
+
+        fs.set_private().unwrap();
+
+        assert_eq!(
+            std::fs::metadata(tmp.path()).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
     }
 
     #[cfg(unix)]
