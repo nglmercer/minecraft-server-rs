@@ -67,6 +67,10 @@ pub enum Error {
     #[error("archive entry {0} would escape the destination")]
     UnsafeArchiveEntry(String),
 
+    /// An archive exceeded an explicit extraction safety limit.
+    #[error("archive exceeds its safety limits: {0}")]
+    ArchiveLimit(String),
+
     /// Provisioning exceeded the configured limit.
     #[error("preparation did not finish within {0}s")]
     PrepareTimedOut(u64),
@@ -74,6 +78,19 @@ pub enum Error {
     /// A blocking task panicked or was cancelled.
     #[error("background task failed: {0}")]
     Task(String),
+
+    /// A configuration value would make the process or its supervisor unsafe
+    /// to run.
+    #[error("invalid server configuration: {0}")]
+    InvalidConfiguration(String),
+
+    /// A console command exceeded the deliberately small command boundary.
+    #[error("invalid console command: {0}")]
+    InvalidCommand(&'static str),
+
+    /// Provisioning or launching was cancelled by an operator.
+    #[error("server start was cancelled")]
+    StartCancelled,
 }
 
 impl Error {
@@ -82,6 +99,31 @@ impl Error {
         Error::Io {
             path: path.into(),
             source,
+        }
+    }
+
+    /// A message safe to show in a server operator's console. Internal
+    /// filesystem paths and dependency error chains stay in structured logs.
+    pub fn client_message(&self) -> String {
+        match self {
+            Error::InvalidTransition { .. }
+            | Error::ConsoleUnavailable
+            | Error::EulaNotAccepted
+            | Error::InvalidBackupId(_)
+            | Error::BackupNotFound(_)
+            | Error::UnsafeArchiveEntry(_)
+            | Error::ArchiveLimit(_)
+            | Error::PrepareTimedOut(_)
+            | Error::InvalidConfiguration(_)
+            | Error::InvalidCommand(_)
+            | Error::StartCancelled => self.to_string(),
+            Error::JavaUnavailable(major, _) => format!("Java {major} is unavailable"),
+            Error::Java(_)
+            | Error::Core(_)
+            | Error::Io { .. }
+            | Error::PlainIo(_)
+            | Error::Serde(_)
+            | Error::Task(_) => "an internal error prevented the server operation".into(),
         }
     }
 }

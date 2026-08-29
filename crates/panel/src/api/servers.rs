@@ -42,7 +42,11 @@ pub struct ServerView {
     playit: Option<crate::store::PlayitBinding>,
 }
 
-async fn view(state: &AppState, record: &ServerRecord) -> ApiResult<ServerView> {
+async fn view(
+    state: &AppState,
+    record: &ServerRecord,
+    show_jvm_args: bool,
+) -> ApiResult<ServerView> {
     let guardian = state.guardian(&record.id).await?;
     let live = guardian.snapshot().await;
     let metrics = live.pid.and_then(|pid| state.metrics.of(pid));
@@ -62,7 +66,15 @@ async fn view(state: &AppState, record: &ServerRecord) -> ApiResult<ServerView> 
         java_major: record.config.java_major,
         memory: record.config.memory,
         eula_accepted: record.config.eula_accepted,
-        jvm_args: record.config.jvm_args.clone(),
+        // JVM arguments are an administrator-controlled field. In addition to
+        // rejecting non-admin writes, do not disclose them to server-only
+        // operators because flags can contain paths, agent settings, or other
+        // deployment-specific data.
+        jvm_args: if show_jvm_args {
+            record.config.jvm_args.clone()
+        } else {
+            Vec::new()
+        },
         server_args: record.config.server_args.clone(),
         policy: record.policy.clone(),
         created_at: record.created_at.clone(),
@@ -78,13 +90,13 @@ async fn view(state: &AppState, record: &ServerRecord) -> ApiResult<ServerView> 
 /// Resolve a record the caller is allowed to see.
 async fn authorized(state: &AppState, identity: &Identity, id: &str) -> ApiResult<ServerRecord> {
     if !identity.may_access(id) {
-        return Err(ApiError::Forbidden);
+        return Err(ApiError::NotFound("server".into()));
     }
     state
         .store
         .server(id)
         .await
-        .ok_or_else(|| ApiError::NotFound(format!("server {id}")))
+        .ok_or_else(|| ApiError::NotFound("server".into()))
 }
 
 async fn list(
@@ -95,7 +107,7 @@ async fn list(
     let mut out = Vec::new();
     for record in records {
         if identity.may_access(&record.id) {
-            out.push(view(&state, &record).await?);
+            out.push(view(&state, &record, identity.admin).await?);
         }
     }
     Ok(Json(out))
@@ -128,26 +140,79 @@ fn default_port() -> u16 {
     25565
 }
 
+fn validate_name(name: &str) -> ApiResult<String> {
+    let name = name.trim();
+    if name.is_empty() || name.len() > 128 || name.contains(['\0', '\r', '\n']) {
+        return Err(ApiError::BadRequest(
+            "name must be 1-128 bytes and contain no control characters".into(),
+        ));
+    }
+    Ok(name.to_owned())
+}
+
+fn validate_record(state: &AppState, record: &ServerRecord) -> ApiResult<()> {
+    validate_record_with_max(state.limits.max_server_memory_mb, record)
+}
+
+fn validate_record_with_max(max_memory_mb: u32, record: &ServerRecord) -> ApiResult<()> {
+    record.config.validate().map_err(ApiError::BadRequest)?;
+    if record.config.memory.max_mb > max_memory_mb {
+        return Err(ApiError::BadRequest(format!(
+            "memory max_mb must not exceed {} MiB",
+            max_memory_mb
+        )));
+    }
+    record.policy.validate().map_err(ApiError::BadRequest)?;
+    Ok(())
+}
+
+fn validate_aggregate_memory(
+    servers: &[ServerRecord],
+    replacing: Option<(&str, u32)>,
+    additional: Option<u32>,
+    max_memory_mb: u32,
+) -> ApiResult<()> {
+    let mut total = 0_u64;
+    for server in servers {
+        if replacing.is_some_and(|(id, _)| id == server.id) {
+            continue;
+        }
+        total = total
+            .checked_add(server.config.memory.max_mb as u64)
+            .ok_or_else(|| ApiError::Conflict("aggregate server memory quota exceeded".into()))?;
+    }
+    if let Some((_, memory)) = replacing {
+        total = total
+            .checked_add(memory as u64)
+            .ok_or_else(|| ApiError::Conflict("aggregate server memory quota exceeded".into()))?;
+    }
+    if let Some(memory) = additional {
+        total = total
+            .checked_add(memory as u64)
+            .ok_or_else(|| ApiError::Conflict("aggregate server memory quota exceeded".into()))?;
+    }
+    if total > max_memory_mb as u64 {
+        return Err(ApiError::Conflict(
+            "aggregate server memory quota exceeded".into(),
+        ));
+    }
+    Ok(())
+}
+
 async fn create(
     State(state): State<Arc<AppState>>,
     AdminIdentity(admin): AdminIdentity,
     Json(body): Json<CreateServer>,
 ) -> ApiResult<Json<ServerView>> {
-    if body.name.trim().is_empty() {
-        return Err(ApiError::BadRequest("name is required".into()));
-    }
-
-    port_is_free(&state, body.port, None).await?;
+    let _server_lock = state.server_mutation_lock.lock().await;
+    let name = validate_name(&body.name)?;
 
     let id = Uuid::new_v4().to_string();
     let directory = state.server_dir(&id);
-    tokio::fs::create_dir_all(&directory)
-        .await
-        .map_err(|e| ApiError::Internal(e.into()))?;
 
     let record = ServerRecord {
         id: id.clone(),
-        name: body.name.trim().to_string(),
+        name,
         config: ServerConfig {
             core: body.core,
             version: body.version,
@@ -156,7 +221,7 @@ async fn create(
             memory: body.memory,
             jvm_args: Vec::new(),
             server_args: vec!["nogui".into()],
-            directory,
+            directory: directory.clone(),
             port: body.port,
             eula_accepted: body.eula_accepted,
         },
@@ -164,15 +229,43 @@ async fn create(
         playit: None,
         created_at: now(),
     };
+    validate_record(&state, &record)?;
+    crate::state::secure_directory(&directory)
+        .await
+        .map_err(ApiError::Internal)?;
 
-    state
+    let max_memory_mb = state.limits.max_server_memory_mb;
+    let write = state
         .store
-        .update(|data| data.servers.push(record.clone()))
+        .try_update(|data| -> ApiResult<()> {
+            if data
+                .servers
+                .iter()
+                .any(|server| server.config.port == record.config.port)
+            {
+                return Err(ApiError::Conflict(format!(
+                    "port {} is already assigned",
+                    record.config.port
+                )));
+            }
+            validate_aggregate_memory(
+                data.servers.as_slice(),
+                None,
+                Some(record.config.memory.max_mb),
+                max_memory_mb,
+            )?;
+            data.servers.push(record.clone());
+            Ok(())
+        })
         .await?;
+    if let Err(error) = write {
+        state.remove_uncommitted_server_dir(&id).await;
+        return Err(error);
+    }
     state.insert_guardian(&record).await;
     tracing::info!(server = %record.id, by = %admin.username, "server created");
 
-    Ok(Json(view(&state, &record).await?))
+    Ok(Json(view(&state, &record, true).await?))
 }
 
 async fn get_one(
@@ -181,7 +274,7 @@ async fn get_one(
     Path(id): Path<String>,
 ) -> ApiResult<Json<ServerView>> {
     let record = authorized(&state, &identity, &id).await?;
-    Ok(Json(view(&state, &record).await?))
+    Ok(Json(view(&state, &record, identity.admin).await?))
 }
 
 /// Body of `PATCH /api/servers/:id`. Every field is optional.
@@ -206,64 +299,87 @@ async fn update(
     Path(id): Path<String>,
     Json(body): Json<UpdateServer>,
 ) -> ApiResult<Json<ServerView>> {
-    let mut record = authorized(&state, &identity, &id).await?;
-
-    if let Some(name) = body.name {
-        record.name = name;
+    let _server_lock = state.server_mutation_lock.lock().await;
+    authorized(&state, &identity, &id).await?;
+    if body.jvm_args.is_some() && !identity.admin {
+        return Err(ApiError::Forbidden);
     }
-    if let Some(core) = body.core {
-        record.config.core = core;
-    }
-    if let Some(version) = body.version {
-        record.config.version = version;
-    }
-    if let Some(build) = body.build {
-        record.config.build = build;
-    }
-    if let Some(java) = body.java_major {
-        record.config.java_major = java;
-    }
-    if let Some(memory) = body.memory {
-        record.config.memory = memory;
-    }
-    if let Some(port) = body.port {
-        // Create checked this; update has to as well, or two servers end up
-        // fighting over the same port and the second one dies at bind time.
-        port_is_free(&state, port, Some(&id)).await?;
-        if record
-            .playit
-            .as_ref()
-            .map(|binding| binding.local_port != port)
-            .unwrap_or(false)
-        {
-            return Err(ApiError::Conflict(
-                "disable the Playit tunnel before changing the server port".into(),
-            ));
-        }
-        record.config.port = port;
-    }
-    if let Some(eula) = body.eula_accepted {
-        record.config.eula_accepted = eula;
-    }
-    if let Some(args) = body.jvm_args {
-        record.config.jvm_args = args;
-    }
-    if let Some(args) = body.server_args {
-        record.config.server_args = args;
-    }
-    if let Some(policy) = body.policy {
-        record.policy = policy;
-    }
-
-    let stored = record.clone();
-    state
+    let max_memory_mb = state.limits.max_server_memory_mb;
+    let server_id = id.clone();
+    let record = state
         .store
-        .update(move |data| {
-            if let Some(slot) = data.servers.iter_mut().find(|s| s.id == stored.id) {
-                *slot = stored;
+        .try_update(move |data| -> ApiResult<ServerRecord> {
+            let Some(slot) = data.servers.iter().find(|server| server.id == server_id) else {
+                return Err(ApiError::NotFound("server".into()));
+            };
+            let mut next = slot.clone();
+
+            if let Some(name) = body.name {
+                next.name = validate_name(&name)?;
             }
+            if let Some(core) = body.core {
+                next.config.core = core;
+            }
+            if let Some(version) = body.version {
+                next.config.version = version;
+            }
+            if let Some(build) = body.build {
+                next.config.build = build;
+            }
+            if let Some(java) = body.java_major {
+                next.config.java_major = java;
+            }
+            if let Some(memory) = body.memory {
+                next.config.memory = memory;
+            }
+            if let Some(port) = body.port {
+                if data
+                    .servers
+                    .iter()
+                    .any(|server| server.id != next.id && server.config.port == port)
+                {
+                    return Err(ApiError::Conflict(format!(
+                        "port {port} is already assigned"
+                    )));
+                }
+                if next
+                    .playit
+                    .as_ref()
+                    .is_some_and(|binding| binding.local_port != port)
+                {
+                    return Err(ApiError::Conflict(
+                        "disable the Playit tunnel before changing the server port".into(),
+                    ));
+                }
+                next.config.port = port;
+            }
+            if let Some(eula) = body.eula_accepted {
+                next.config.eula_accepted = eula;
+            }
+            if let Some(args) = body.jvm_args {
+                next.config.jvm_args = args;
+            }
+            if let Some(args) = body.server_args {
+                next.config.server_args = args;
+            }
+            if let Some(policy) = body.policy {
+                next.policy = policy;
+            }
+            validate_record_with_max(max_memory_mb, &next)?;
+            validate_aggregate_memory(
+                data.servers.as_slice(),
+                Some((&next.id, next.config.memory.max_mb)),
+                None,
+                max_memory_mb,
+            )?;
+            *data
+                .servers
+                .iter_mut()
+                .find(|server| server.id == next.id)
+                .expect("the slot was found above") = next.clone();
+            Ok(next)
         })
-        .await?;
+        .await??;
 
     // Config changes apply on the next start; a running server keeps its
     // current process rather than being restarted out from under its players.
@@ -271,7 +387,7 @@ async fn update(
     guardian.set_config(record.config.clone()).await;
     guardian.set_policy(record.policy.clone()).await;
 
-    Ok(Json(view(&state, &record).await?))
+    Ok(Json(view(&state, &record, identity.admin).await?))
 }
 
 async fn delete(
@@ -279,6 +395,7 @@ async fn delete(
     AdminIdentity(admin): AdminIdentity,
     Path(id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    let _server_lock = state.server_mutation_lock.lock().await;
     let record = state
         .store
         .server(&id)
@@ -296,12 +413,12 @@ async fn delete(
         }
     }
 
-    tracing::info!(server = %id, by = %admin.username, "server deleted");
-    state.remove_guardian(&id).await;
     state
         .store
         .update(|data| data.servers.retain(|s| s.id != id))
         .await?;
+    tracing::info!(server = %id, by = %admin.username, "server deleted");
+    state.remove_guardian(&id).await;
 
     // Server files are deliberately left on disk: deleting a world by clicking
     // a button in a web UI is not a mistake anyone should be able to make.
@@ -338,6 +455,7 @@ async fn power(
     Path(id): Path<String>,
     Json(body): Json<PowerRequest>,
 ) -> ApiResult<Json<guardian::Snapshot>> {
+    let _server_lock = state.server_mutation_lock.lock().await;
     authorized(&state, &identity, &id).await?;
     let guardian = state.guardian(&id).await?;
 
@@ -363,7 +481,9 @@ async fn command(
     Path(id): Path<String>,
     Json(body): Json<CommandRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    let _server_lock = state.server_mutation_lock.lock().await;
     authorized(&state, &identity, &id).await?;
+    guardian::process::validate_command(body.command.trim())?;
     state
         .guardian(&id)
         .await?
@@ -378,6 +498,7 @@ async fn reinstall(
     identity: Identity,
     Path(id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    let _server_lock = state.server_mutation_lock.lock().await;
     authorized(&state, &identity, &id).await?;
 
     let guardian = state.guardian(&id).await?;
@@ -394,24 +515,6 @@ async fn logs(
 ) -> ApiResult<Json<Vec<guardian::ConsoleLine>>> {
     authorized(&state, &identity, &id).await?;
     Ok(Json(state.guardian(&id).await?.console().await))
-}
-
-/// Reject a port already assigned to a different server.
-async fn port_is_free(state: &AppState, port: u16, except: Option<&str>) -> ApiResult<()> {
-    let clash = state
-        .store
-        .read()
-        .await
-        .servers
-        .iter()
-        .any(|s| s.config.port == port && Some(s.id.as_str()) != except);
-
-    if clash {
-        return Err(ApiError::BadRequest(format!(
-            "port {port} is already assigned"
-        )));
-    }
-    Ok(())
 }
 
 fn now() -> String {

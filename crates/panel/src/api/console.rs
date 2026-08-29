@@ -4,16 +4,17 @@
 //! and the client sends `{"type":"command","command":"..."}` up.
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 use axum::response::Response;
-use axum::routing::get;
-use axum::Router;
+use axum::routing::{get, post};
+use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use std::sync::Arc;
-use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::{broadcast::error::RecvError, OwnedSemaphorePermit};
 
-use crate::auth::Identity;
+use crate::auth::{token_from_headers, Identity};
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
@@ -33,19 +34,63 @@ enum ClientMessage {
 async fn upgrade(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
-    identity: Identity,
     Path(id): Path<String>,
+    Query(query): Query<TicketQuery>,
 ) -> ApiResult<Response> {
-    if !identity.may_access(&id) {
-        return Err(ApiError::Forbidden);
+    let ws = ws
+        .max_message_size(guardian::process::MAX_COMMAND_BYTES + 1024)
+        .max_frame_size(guardian::process::MAX_COMMAND_BYTES + 1024);
+    let Some((server, session_token)) = state.tickets.redeem_console(&query.ticket) else {
+        return Err(ApiError::Unauthorized);
+    };
+    if server != id {
+        return Err(ApiError::Unauthorized);
     }
+    let identity = state
+        .sessions
+        .resolve(&session_token)
+        .await
+        .ok_or(ApiError::Unauthorized)?;
+    if !identity.may_access(&id) {
+        return Err(ApiError::NotFound("server".into()));
+    }
+    let websocket_slot = state
+        .websocket_slots
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ApiError::TooManyRequests)?;
     // Resolve before upgrading, so a bad id fails as a clean 404 rather than a
     // socket that opens and immediately closes.
     let guardian = state.guardian(&id).await?;
-    Ok(ws.on_upgrade(move |socket| pump(socket, guardian)))
+    Ok(ws.on_upgrade(move |socket| pump(socket, guardian, websocket_slot)))
 }
 
-async fn pump(socket: WebSocket, guardian: Arc<guardian::Guardian>) {
+#[derive(serde::Deserialize)]
+struct TicketQuery {
+    ticket: String,
+}
+
+/// Issue the one-use ticket used by the browser WebSocket handshake.
+async fn issue_ticket(
+    State(state): State<Arc<AppState>>,
+    identity: Identity,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> ApiResult<Json<serde_json::Value>> {
+    if !identity.may_access(&id) {
+        return Err(ApiError::NotFound("server".into()));
+    }
+    state.guardian(&id).await?;
+    let token = token_from_headers(&headers).ok_or(ApiError::Unauthorized)?;
+    let ticket = state.tickets.issue_console(id, token);
+    Ok(Json(serde_json::json!({ "ticket": ticket })))
+}
+
+async fn pump(
+    socket: WebSocket,
+    guardian: Arc<guardian::Guardian>,
+    _websocket_slot: OwnedSemaphorePermit,
+) {
     let (mut tx, mut rx) = socket.split();
 
     // Subscribe before backfilling, so a line logged during the backfill is
@@ -96,6 +141,9 @@ async fn pump(socket: WebSocket, guardian: Arc<guardian::Guardian>) {
         let Message::Text(text) = message else {
             continue;
         };
+        if text.len() > guardian::process::MAX_COMMAND_BYTES + 1024 {
+            continue;
+        }
         match serde_json::from_str::<ClientMessage>(&text) {
             Ok(ClientMessage::Command { command }) => {
                 let _ = guardian.command(command.trim()).await;
@@ -109,5 +157,7 @@ async fn pump(socket: WebSocket, guardian: Arc<guardian::Guardian>) {
 
 /// The `/api/servers/{id}/ws` route.
 pub fn router() -> Router<Arc<AppState>> {
-    Router::new().route("/{id}/ws", get(upgrade))
+    Router::new()
+        .route("/{id}/ws", get(upgrade))
+        .route("/{id}/ws/ticket", post(issue_ticket))
 }

@@ -218,6 +218,45 @@ async fn starting_twice_is_rejected_rather_than_spawning_two_jvms() {
     guardian.stop().await.unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn genuinely_concurrent_starts_reserve_exactly_one_process() {
+    let tmp = tempfile::tempdir().unwrap();
+    let guardian = guardian_with(tmp.path(), GuardianConfig::default(), &["done", "serve"]);
+    let mut events = guardian.subscribe();
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(16));
+
+    let callers = (0..16)
+        .map(|_| {
+            let guardian = guardian.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                guardian.start().await
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut successes = 0;
+    let mut conflicts = 0;
+    for caller in callers {
+        match caller.await.unwrap() {
+            Ok(()) => successes += 1,
+            Err(guardian::Error::InvalidTransition { .. }) => conflicts += 1,
+            Err(error) => panic!("unexpected concurrent start error: {error}"),
+        }
+    }
+
+    assert_eq!(successes, 1);
+    assert_eq!(conflicts, 15);
+    await_status(&mut events, ServerStatus::Online).await;
+    let snapshot = guardian.snapshot().await;
+    assert!(snapshot.pid.is_some());
+
+    guardian.stop().await.unwrap();
+    assert_eq!(guardian.status().await, ServerStatus::Offline);
+    assert!(guardian.snapshot().await.pid.is_none());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn stopping_an_offline_server_is_rejected() {
     let tmp = tempfile::tempdir().unwrap();
@@ -225,6 +264,16 @@ async fn stopping_an_offline_server_is_rejected() {
 
     let error = guardian.stop().await.unwrap_err();
     assert!(matches!(error, guardian::Error::InvalidTransition { .. }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn killing_an_offline_server_is_rejected_without_poisoning_state() {
+    let tmp = tempfile::tempdir().unwrap();
+    let guardian = guardian_with(tmp.path(), GuardianConfig::default(), &["exit:0"]);
+
+    let error = guardian.kill().await.unwrap_err();
+    assert!(matches!(error, guardian::Error::InvalidTransition { .. }));
+    assert_eq!(guardian.status().await, ServerStatus::Offline);
 }
 
 #[tokio::test(flavor = "multi_thread")]

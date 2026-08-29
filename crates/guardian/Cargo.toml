@@ -23,9 +23,12 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
+cap-fs-ext = "4.0.3"
+cap-std = "4.0.3"
 tar = "0.4"
 flate2 = "1"
 time = { version = "0.3", features = ["formatting", "parsing"] }
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs"] }

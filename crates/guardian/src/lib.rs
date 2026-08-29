@@ -29,13 +29,16 @@ pub mod config;
 pub mod environment;
 pub mod error;
 pub mod events;
+pub mod fs;
 pub mod install;
 pub mod process;
+pub mod sandbox;
 
 pub use backup::Backup;
-pub use config::{GuardianConfig, Memory, ServerConfig};
+pub use config::{GuardianConfig, Memory, ServerConfig, MAX_SERVER_MEMORY_MB};
 pub use environment::{prepare, resolve_jar, resolve_java, Provision, ServerEnvironment};
 pub use error::{Error, Result};
 pub use events::{ConsoleLine, ServerEvent, ServerStatus, Stream};
+pub use fs::ScopedFs;
 pub use install::Installation;
 pub use process::{Guardian, Snapshot};

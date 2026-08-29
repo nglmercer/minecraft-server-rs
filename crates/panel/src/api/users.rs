@@ -37,16 +37,47 @@ async fn list(
     Ok(Json(users.iter().map(UserView::from).collect()))
 }
 
-/// Body of `POST /api/users`.
+/// Body of the user creation endpoint.
 #[derive(Deserialize)]
 pub struct CreateUser {
     username: String,
     password: String,
     #[serde(default)]
     admin: bool,
-    /// Server ids this account may access. Ignored when `admin` is true.
     #[serde(default)]
     servers: Vec<String>,
+}
+
+fn validate_username(input: &str) -> ApiResult<String> {
+    let username = input.trim();
+    if username.is_empty() || username.len() > 128 || username.contains(['\0', '\r', '\n']) {
+        return Err(ApiError::BadRequest(
+            "username must be 1-128 bytes and contain no control characters".into(),
+        ));
+    }
+    Ok(username.to_owned())
+}
+
+fn validate_server_ids(
+    servers: &[String],
+    available: &[crate::store::ServerRecord],
+) -> ApiResult<()> {
+    if servers.len() > 1024 {
+        return Err(ApiError::BadRequest("too many server permissions".into()));
+    }
+    let mut unique = std::collections::HashSet::new();
+    for server in servers {
+        if server.len() > 128
+            || server.contains(['\0', '\r', '\n'])
+            || !unique.insert(server)
+            || !available.iter().any(|record| record.id == *server)
+        {
+            return Err(ApiError::BadRequest(
+                "invalid or unknown server permission".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 async fn create(
@@ -54,38 +85,44 @@ async fn create(
     AdminIdentity(_): AdminIdentity,
     Json(body): Json<CreateUser>,
 ) -> ApiResult<Json<UserView>> {
-    let username = body.username.trim().to_string();
-    if username.is_empty() {
-        return Err(ApiError::BadRequest("username is required".into()));
-    }
-    if body.password.len() < 8 {
+    let username = validate_username(&body.username)?;
+    if body.password.len() < 8 || body.password.len() > 1024 {
         return Err(ApiError::BadRequest(
-            "password must be at least 8 characters".into(),
+            "password must be between 8 and 1024 characters".into(),
         ));
     }
-    if state.store.user(&username).await.is_some() {
-        return Err(ApiError::BadRequest(format!("{username} already exists")));
-    }
-
+    let password_hash = hash_password(&body.password)
+        .map_err(|error| ApiError::Internal(anyhow::anyhow!("password hashing failed: {error}")))?;
     let user = User {
         username: username.clone(),
-        password_hash: hash_password(&body.password)
-            .map_err(|e| ApiError::Internal(anyhow::anyhow!("hashing failed: {e}")))?,
+        password_hash,
         admin: body.admin,
         servers: body.servers,
     };
-
     let stored = user.clone();
-    state
+    let inserted = state
         .store
-        .update(move |data| data.users.push(stored))
-        .await?;
+        .try_update(move |data| -> ApiResult<bool> {
+            if data
+                .users
+                .iter()
+                .any(|user| user.username == stored.username)
+            {
+                return Ok(false);
+            }
+            validate_server_ids(&stored.servers, &data.servers)?;
+            data.users.push(stored);
+            Ok(true)
+        })
+        .await??;
+    if !inserted {
+        return Err(ApiError::Conflict(format!("{username} already exists")));
+    }
     tracing::info!(user = %username, "account created");
-
     Ok(Json(UserView::from(&user)))
 }
 
-/// Body of `PATCH /api/users/{username}`. Every field is optional.
+/// Body of the user update endpoint.
 #[derive(Deserialize)]
 pub struct UpdateUser {
     password: Option<String>,
@@ -99,56 +136,56 @@ async fn update(
     Path(username): Path<String>,
     Json(body): Json<UpdateUser>,
 ) -> ApiResult<Json<UserView>> {
-    let mut user = state
-        .store
-        .user(&username)
-        .await
-        .ok_or_else(|| ApiError::NotFound(format!("user {username}")))?;
-
-    if let Some(password) = &body.password {
-        if password.len() < 8 {
-            return Err(ApiError::BadRequest(
-                "password must be at least 8 characters".into(),
-            ));
-        }
-        user.password_hash = hash_password(password)
-            .map_err(|e| ApiError::Internal(anyhow::anyhow!("hashing failed: {e}")))?;
-    }
-
-    if let Some(is_admin) = body.admin {
-        // Removing the last administrator would lock everyone out of the panel
-        // with no way back in short of editing panel.json by hand.
-        if !is_admin && user.admin && last_admin(&state, &username).await? {
-            return Err(ApiError::BadRequest(
-                "this is the only administrator; promote someone else first".into(),
-            ));
-        }
-        user.admin = is_admin;
-    }
-
-    if let Some(servers) = body.servers {
-        user.servers = servers;
-    }
-
-    let stored = user.clone();
-    state
-        .store
-        .update(move |data| {
-            if let Some(slot) = data
-                .users
-                .iter_mut()
-                .find(|u| u.username == stored.username)
-            {
-                *slot = stored;
+    let password_hash = match body.password {
+        Some(password) => {
+            if password.len() < 8 || password.len() > 1024 {
+                return Err(ApiError::BadRequest(
+                    "password must be between 8 and 1024 characters".into(),
+                ));
             }
+            Some(hash_password(&password).map_err(|error| {
+                ApiError::Internal(anyhow::anyhow!("password hashing failed: {error}"))
+            })?)
+        }
+        None => None,
+    };
+    let name = username.clone();
+    let updated = state
+        .store
+        .try_update(move |data| -> ApiResult<User> {
+            let Some(index) = data.users.iter().position(|user| user.username == name) else {
+                return Err(ApiError::NotFound("user".into()));
+            };
+            if let Some(servers) = body.servers.as_ref() {
+                validate_server_ids(servers, &data.servers)?;
+            }
+            let current = &data.users[index];
+            if body.admin == Some(false)
+                && current.admin
+                && data.users.iter().filter(|user| user.admin).count() == 1
+            {
+                return Err(ApiError::BadRequest(
+                    "this is the only administrator; promote someone else first".into(),
+                ));
+            }
+            let mut next = current.clone();
+            if let Some(hash) = password_hash {
+                next.password_hash = hash;
+            }
+            if let Some(is_admin) = body.admin {
+                next.admin = is_admin;
+            }
+            if let Some(servers) = body.servers {
+                next.servers = servers;
+            }
+            data.users[index] = next.clone();
+            Ok(next)
         })
-        .await?;
+        .await??;
 
-    // Permissions and passwords only take effect once existing tokens are gone.
     state.sessions.revoke_user(&username).await;
     tracing::info!(user = %username, by = %admin.username, "account updated");
-
-    Ok(Json(UserView::from(&user)))
+    Ok(Json(UserView::from(&updated)))
 }
 
 async fn delete(
@@ -161,34 +198,28 @@ async fn delete(
             "you cannot delete your own account".into(),
         ));
     }
-    if state.store.user(&username).await.is_none() {
-        return Err(ApiError::NotFound(format!("user {username}")));
-    }
-    if last_admin(&state, &username).await? {
-        return Err(ApiError::BadRequest(
-            "this is the only administrator; promote someone else first".into(),
-        ));
-    }
-
     let name = username.clone();
     state
         .store
-        .update(move |data| data.users.retain(|u| u.username != name))
-        .await?;
+        .try_update(move |data| -> ApiResult<()> {
+            let Some(index) = data.users.iter().position(|user| user.username == name) else {
+                return Err(ApiError::NotFound("user".into()));
+            };
+            if data.users[index].admin && data.users.iter().filter(|user| user.admin).count() == 1 {
+                return Err(ApiError::BadRequest(
+                    "this is the only administrator; promote someone else first".into(),
+                ));
+            }
+            data.users.remove(index);
+            Ok(())
+        })
+        .await??;
     state.sessions.revoke_user(&username).await;
     tracing::info!(user = %username, by = %admin.username, "account deleted");
-
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-/// Whether `username` is the only admin left.
-async fn last_admin(state: &AppState, username: &str) -> ApiResult<bool> {
-    let users = state.store.read().await.users;
-    let admins: Vec<&User> = users.iter().filter(|u| u.admin).collect();
-    Ok(admins.len() == 1 && admins[0].username == username)
-}
-
-/// Routes under `/api/users`.
+/// Routes under the users prefix.
 pub fn router() -> Router<Arc<AppState>> {
     Router::new().route("/users", get(list).post(create)).route(
         "/users/{username}",

@@ -7,6 +7,29 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Largest JVM heap the panel accepts from a single server configuration.
+///
+/// This is intentionally finite even on a host with a large amount of RAM:
+/// configuration is untrusted input and `u32::MAX` would otherwise become a
+/// denial of service at process launch.
+pub const MAX_SERVER_MEMORY_MB: u32 = 1_048_576;
+/// Smallest useful retained console buffer.
+pub const MIN_CONSOLE_BUFFER: usize = 10;
+/// Largest retained console buffer.
+pub const MAX_CONSOLE_BUFFER: usize = 100_000;
+/// Upper bound for automatic restart attempts.
+pub const MAX_RETRIES: u32 = 100;
+/// Upper bound for retry and stop delays.
+pub const MAX_POLICY_DELAY_SECS: u64 = 60 * 60;
+/// Upper bound for provisioning timeout.
+pub const MAX_PREPARE_TIMEOUT_SECS: u64 = 24 * 60 * 60;
+/// Maximum number of JVM/server arguments accepted in one configuration.
+pub const MAX_ARGUMENTS: usize = 128;
+/// Maximum bytes in one JVM/server argument.
+pub const MAX_ARGUMENT_BYTES: usize = 16 * 1024;
+/// Java feature versions above this are not meaningful configuration values.
+pub const MAX_JAVA_MAJOR: u32 = 100;
+
 /// How much heap the JVM gets.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Memory {
@@ -32,6 +55,22 @@ impl Memory {
             format!("-Xms{}M", self.min_mb),
             format!("-Xmx{}M", self.max_mb),
         ]
+    }
+
+    /// Validate heap sizing before it reaches a process launcher.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.min_mb == 0 || self.max_mb == 0 {
+            return Err("memory values must be greater than zero".into());
+        }
+        if self.min_mb > self.max_mb {
+            return Err("memory min_mb must not exceed max_mb".into());
+        }
+        if self.max_mb > MAX_SERVER_MEMORY_MB {
+            return Err(format!(
+                "memory max_mb must not exceed {MAX_SERVER_MEMORY_MB}"
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -104,6 +143,38 @@ impl ServerConfig {
             eula_accepted: false,
         }
     }
+
+    /// Validate values that can cause resource exhaustion or unsafe process
+    /// argument handling.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.core.trim().is_empty() || self.core.len() > 128 {
+            return Err("server core is required and must be at most 128 bytes".into());
+        }
+        if self.version.trim().is_empty() || self.version.len() > 128 {
+            return Err("server version is required and must be at most 128 bytes".into());
+        }
+        if self.core.contains(['\0', '\r', '\n']) || self.version.contains(['\0', '\r', '\n']) {
+            return Err("server core and version may not contain control characters".into());
+        }
+        if self.java_major == 0 || self.java_major > MAX_JAVA_MAJOR {
+            return Err(format!("java_major must be between 1 and {MAX_JAVA_MAJOR}"));
+        }
+        if let Some(build) = &self.build {
+            if build.trim().is_empty() || build.len() > 128 || build.contains(['\0', '\r', '\n']) {
+                return Err("build must be 1-128 bytes and contain no control characters".into());
+            }
+        }
+        if self.directory.as_os_str().is_empty() {
+            return Err("server directory is required".into());
+        }
+        self.memory.validate()?;
+        validate_arguments(&self.jvm_args, "jvm_args")?;
+        validate_arguments(&self.server_args, "server_args")?;
+        if self.port == 0 {
+            return Err("port must be greater than zero".into());
+        }
+        Ok(())
+    }
 }
 
 /// Supervision policy: what happens when the process goes away.
@@ -141,6 +212,51 @@ impl Default for GuardianConfig {
             prepare_timeout_secs: default_prepare_timeout(),
         }
     }
+}
+
+impl GuardianConfig {
+    /// Validate supervision values before they are used to allocate memory or
+    /// schedule long sleeps.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.max_retries > MAX_RETRIES {
+            return Err(format!("max_retries must not exceed {MAX_RETRIES}"));
+        }
+        if self.retry_delay_secs > MAX_POLICY_DELAY_SECS {
+            return Err(format!(
+                "retry_delay_secs must not exceed {MAX_POLICY_DELAY_SECS}"
+            ));
+        }
+        if self.stop_timeout_secs > MAX_POLICY_DELAY_SECS {
+            return Err(format!(
+                "stop_timeout_secs must not exceed {MAX_POLICY_DELAY_SECS}"
+            ));
+        }
+        if self.console_buffer < MIN_CONSOLE_BUFFER || self.console_buffer > MAX_CONSOLE_BUFFER {
+            return Err(format!(
+                "console_buffer must be between {MIN_CONSOLE_BUFFER} and {MAX_CONSOLE_BUFFER}"
+            ));
+        }
+        if self.prepare_timeout_secs == 0 || self.prepare_timeout_secs > MAX_PREPARE_TIMEOUT_SECS {
+            return Err(format!(
+                "prepare_timeout_secs must be between 1 and {MAX_PREPARE_TIMEOUT_SECS}"
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn validate_arguments(arguments: &[String], field: &str) -> Result<(), String> {
+    if arguments.len() > MAX_ARGUMENTS {
+        return Err(format!("{field} contains too many arguments"));
+    }
+    if arguments.iter().any(|argument| {
+        argument.len() > MAX_ARGUMENT_BYTES || argument.contains(['\0', '\r', '\n'])
+    }) {
+        return Err(format!(
+            "{field} contains an oversized argument or a control character"
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -223,5 +339,35 @@ mod tests {
             "an unbounded retry loop would hammer a broken server"
         );
         assert!(policy.console_buffer > 0);
+        assert!(policy.validate().is_ok());
+    }
+
+    #[test]
+    fn invalid_resources_are_rejected_before_launch() {
+        let mut memory = Memory {
+            min_mb: 2048,
+            max_mb: 1024,
+        };
+        assert!(memory.validate().is_err());
+        memory.max_mb = MAX_SERVER_MEMORY_MB + 1;
+        assert!(memory.validate().is_err());
+
+        let policy = GuardianConfig {
+            console_buffer: MAX_CONSOLE_BUFFER + 1,
+            ..Default::default()
+        };
+        assert!(policy.validate().is_err());
+        let invalid_timeout = GuardianConfig {
+            prepare_timeout_secs: 0,
+            ..Default::default()
+        };
+        assert!(invalid_timeout.validate().is_err());
+
+        let mut config = ServerConfig::paper("/srv/mc", "1.21.8");
+        config.memory.min_mb = 0;
+        assert!(config.validate().is_err());
+        config.memory = Memory::default();
+        config.jvm_args = vec!["-Xmx1G\nmalicious".into()];
+        assert!(config.validate().is_err());
     }
 }

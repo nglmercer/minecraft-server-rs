@@ -6,10 +6,12 @@
 
 use crate::config::ServerConfig;
 use crate::error::{Error, Result};
+use crate::fs::ScopedFs;
 use crate::install::Installation;
 use java_path::{JavaInstallation, JavaInstaller, SelectExt};
 use minecraft_core::MinecraftClient;
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 /// A prepared, runnable server.
 ///
@@ -103,7 +105,19 @@ pub async fn resolve_jar(
         None => client.latest_build(&config.core, &config.version).await?,
     };
 
-    let jar = config.directory.join("server.jar");
+    let fs = ScopedFs::open(&config.directory).map_err(|e| Error::io(&config.directory, e))?;
+    // The vendor downloader is streaming and checksum-verifying, but its
+    // portable path API cannot promise no-follow semantics for an attacker
+    // replacing the destination concurrently. Publish into the open
+    // capability after validation instead.
+    if let Ok(metadata) = fs.metadata("server.jar") {
+        if metadata.is_symlink {
+            fs.remove("server.jar")
+                .map_err(|e| Error::io(config.directory.join("server.jar"), e))?;
+        }
+    }
+    let temporary_name = format!(".mcpanel-server-{}.jar", Uuid::new_v4().simple());
+    let temporary = config.directory.join(&temporary_name);
     on_progress(
         format!(
             "downloading {} {} build {}",
@@ -114,7 +128,17 @@ pub async fn resolve_jar(
 
     // `verify` makes the download checksum-checked; `force` is off so an
     // already-correct jar is reused rather than re-fetched.
-    client.download(&build).to(&jar).verify(true).await?;
+    let downloaded = client.download(&build).to(&temporary).verify(true).await;
+    if let Err(error) = downloaded {
+        let _ = fs.remove(&temporary_name);
+        return Err(error.into());
+    }
+    if let Err(error) = fs.replace_file(&temporary_name, "server.jar") {
+        let _ = fs.remove(&temporary_name);
+        return Err(Error::io(config.directory.join("server.jar"), error));
+    }
+
+    let jar = config.directory.join("server.jar");
 
     Ok((jar, build.build_id.to_string()))
 }
@@ -125,20 +149,22 @@ pub async fn scaffold(config: &ServerConfig) -> Result<()> {
     tokio::fs::create_dir_all(dir)
         .await
         .map_err(|e| Error::io(dir, e))?;
+    let fs = ScopedFs::open(dir).map_err(|e| Error::io(dir, e))?;
 
     if config.eula_accepted {
-        let eula = dir.join("eula.txt");
         let body = "# Accepted through the panel.\neula=true\n";
-        tokio::fs::write(&eula, body)
-            .await
-            .map_err(|e| Error::io(&eula, e))?;
+        fs.write_atomic("eula.txt", body.as_bytes())
+            .map_err(|e| Error::io(dir.join("eula.txt"), e))?;
     }
 
     // server.properties is seeded once and then left to the operator, except for
     // the port: the panel presents that as a setting, so it has to be the one
     // that wins. Every other line is preserved exactly as edited.
     let props = dir.join("server.properties");
-    let existing = tokio::fs::read_to_string(&props).await.ok();
+    let existing = fs
+        .read_file("server.properties")
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok());
 
     let body = match existing {
         Some(text) => set_property(&text, "server-port", &config.port.to_string()),
@@ -148,8 +174,7 @@ pub async fn scaffold(config: &ServerConfig) -> Result<()> {
         ),
     };
 
-    tokio::fs::write(&props, body)
-        .await
+    fs.write_atomic("server.properties", body.as_bytes())
         .map_err(|e| Error::io(&props, e))?;
 
     Ok(())
@@ -216,7 +241,7 @@ pub async fn prepare(
     if mode == Provision::IfNeeded {
         if let Some(installation) = &installed {
             match installation.mismatch(config) {
-                None => {
+                None if trusted_installation(installation, config, data_dir) => {
                     return Ok(ServerEnvironment {
                         java: installation.java.clone(),
                         java_major: installation.java_major,
@@ -225,6 +250,10 @@ pub async fn prepare(
                     }
                     .absolutize())
                 }
+                None => on_progress(
+                    "reinstalling: installation metadata is not trusted".into(),
+                    None,
+                ),
                 // Say what changed, so a surprise download is never unexplained.
                 Some(reason) => on_progress(format!("reinstalling: {reason}"), None),
             }
@@ -259,6 +288,55 @@ pub async fn prepare(
     .await?;
 
     Ok(environment)
+}
+
+/// Installation metadata lives inside a server directory an operator can
+/// edit. Only reuse a jar at the exact managed destination and a Java launcher
+/// that is either in the panel's downloaded JDK cache or discoverable as the
+/// requested system Java. This prevents metadata from turning `start` into a
+/// general executable launcher.
+fn trusted_installation(
+    installation: &Installation,
+    config: &ServerConfig,
+    data_dir: &Path,
+) -> bool {
+    let expected_jar = absolute(config.directory.clone()).join("server.jar");
+    if absolute(installation.jar.clone()) != expected_jar {
+        return false;
+    }
+    if !std::fs::symlink_metadata(&expected_jar)
+        .map(|metadata| metadata.file_type().is_file())
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    let Some(java) = std::fs::canonicalize(&installation.java).ok() else {
+        return false;
+    };
+    if !java.is_file() {
+        return false;
+    }
+
+    let downloaded_root = std::fs::canonicalize(jdk_root(data_dir)).ok();
+    if downloaded_root
+        .as_ref()
+        .is_some_and(|root| java.starts_with(root))
+    {
+        return true;
+    }
+
+    java_path::discover()
+        .ok()
+        .map(|installs| {
+            installs.iter().any(|candidate| {
+                candidate.major() == config.java_major
+                    && std::fs::canonicalize(&candidate.java)
+                        .ok()
+                        .is_some_and(|path| path == java)
+            })
+        })
+        .unwrap_or(false)
 }
 
 fn now_rfc3339() -> String {

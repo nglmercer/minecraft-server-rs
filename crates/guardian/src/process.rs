@@ -7,24 +7,28 @@
 //! Every method takes `&self`, so a `Arc<Guardian>` can be shared across HTTP
 //! handlers, WebSocket sessions and the supervisor task without coordination.
 
-use crate::config::{GuardianConfig, ServerConfig};
+use crate::config::{GuardianConfig, ServerConfig, MAX_ARGUMENT_BYTES};
 use crate::environment::{prepare, Provision, ServerEnvironment};
 use crate::error::{Error, Result};
 use crate::events::{ConsoleLine, ServerEvent, ServerStatus, Stream};
+use crate::fs::ScopedFs;
 use crate::install::Installation;
 use std::collections::VecDeque;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::process::{Child, ChildStdin};
+use tokio::sync::{broadcast, watch, Mutex, RwLock};
 use tokio::task::AbortHandle;
 
 /// How often the supervisor checks whether the child has exited.
 const REAP_INTERVAL: Duration = Duration::from_millis(200);
+/// Maximum size of one line sent to the Minecraft console.
+pub const MAX_COMMAND_BYTES: usize = 8 * 1024;
 
 /// Vanilla and every fork log this once the world is loaded and the port is open.
 fn line_means_online(line: &str) -> bool {
@@ -57,6 +61,15 @@ struct RunState {
     intentional: bool,
     /// Handle to the in-flight provisioning task, so it can be abandoned.
     preparing: Option<AbortHandle>,
+    /// Cooperative cancellation for a start provision.  The task is not
+    /// aborted after it might have spawned a child; `launch` must get a chance
+    /// to inspect the state and kill a child that raced with cancellation.
+    preparation_cancel: Option<watch::Sender<bool>>,
+    /// Identifies the preparation task that owns `preparing` and
+    /// `preparation_cancel`, so a cancelled task cannot clean up a later one.
+    preparation_id: u64,
+    /// Monotonic source for preparation ownership ids.
+    next_preparation_id: u64,
     /// Incremented on every spawn; a supervisor whose generation is stale exits quietly.
     generation: u64,
 }
@@ -235,15 +248,57 @@ impl Guardian {
     /// This is how an operator deliberately takes a newer build: an ordinary
     /// start never does it, so restarting cannot change what is running.
     pub async fn reinstall(self: &Arc<Self>) -> Result<ServerEnvironment> {
-        if self.status().await.is_running() {
-            return Err(Error::InvalidTransition {
-                current: self.status().await.as_str(),
-                action: "reinstall",
+        let task = {
+            let mut state = self.state.lock().await;
+            let current = state.status.unwrap_or(ServerStatus::Offline);
+            if current.is_running() || current == ServerStatus::Preparing {
+                return Err(Error::InvalidTransition {
+                    current: current.as_str(),
+                    action: "reinstall",
+                });
+            }
+            state.status = Some(ServerStatus::Preparing);
+            state.intentional = false;
+            state.next_preparation_id = state.next_preparation_id.wrapping_add(1);
+            let preparation_id = state.next_preparation_id;
+            state.preparation_id = preparation_id;
+            *self.environment.write().await = None;
+            let this = Arc::clone(self);
+            let task = tokio::spawn(async move {
+                let result = this.provision(Provision::Force).await;
+                let changed = {
+                    let mut state = this.state.lock().await;
+                    if state.preparation_id == preparation_id {
+                        state.preparing = None;
+                        state.preparation_cancel = None;
+                        if state.status == Some(ServerStatus::Preparing) {
+                            state.status = Some(ServerStatus::Offline);
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                };
+                if changed {
+                    this.emit(ServerEvent::Status {
+                        status: ServerStatus::Offline,
+                    });
+                }
+                result
             });
-        }
+            state.preparing = Some(task.abort_handle());
+            task
+        };
+        self.emit(ServerEvent::Status {
+            status: ServerStatus::Preparing,
+        });
 
-        *self.environment.write().await = None;
-        self.provision(Provision::Force).await
+        match task.await {
+            Ok(result) => result,
+            Err(error) => Err(Error::Task(error.to_string())),
+        }
     }
 
     /// Provision the environment (Java, jar, directory) without starting anything.
@@ -293,7 +348,11 @@ impl Guardian {
     /// [`ServerStatus::Online`]; a failure reports [`ServerStatus::Offline`]
     /// with the reason on the console.
     pub async fn start(self: &Arc<Self>) -> Result<()> {
-        {
+        // The transition, the intent reset, and the task reservation all happen
+        // while one lock is held.  In particular, there is no awaitable gap
+        // between observing Offline and publishing Preparing, so two callers
+        // cannot both reserve a launch.
+        let task = {
             let mut state = self.state.lock().await;
             let current = state.status.unwrap_or(ServerStatus::Offline);
             if !may_start(current) {
@@ -303,64 +362,171 @@ impl Guardian {
                 });
             }
             state.intentional = false;
-        }
+            state.status = Some(ServerStatus::Preparing);
+            state.next_preparation_id = state.next_preparation_id.wrapping_add(1);
+            let preparation_id = state.next_preparation_id;
+            state.preparation_id = preparation_id;
 
-        self.set_status(ServerStatus::Preparing).await;
+            let (cancel, cancel_rx) = watch::channel(false);
+            let this = Arc::clone(self);
+            let task =
+                tokio::spawn(
+                    async move { this.provision_and_launch(cancel_rx, preparation_id).await },
+                );
+            state.preparing = Some(task.abort_handle());
+            state.preparation_cancel = Some(cancel);
+            task
+        };
 
-        let this = Arc::clone(self);
-        let task = tokio::spawn(async move { this.provision_and_launch().await });
-
-        self.state.lock().await.preparing = Some(task.abort_handle());
+        self.emit(ServerEvent::Status {
+            status: ServerStatus::Preparing,
+        });
+        // Dropping the join handle is intentional: the lifecycle task owns the
+        // state transition and must outlive the HTTP request that started it.
+        drop(task);
         Ok(())
     }
 
     /// Resolve the environment and spawn the JVM. Always leaves a terminal status.
-    async fn provision_and_launch(self: Arc<Self>) {
+    async fn provision_and_launch(
+        self: Arc<Self>,
+        mut cancel: watch::Receiver<bool>,
+        preparation_id: u64,
+    ) {
         let environment = match self.environment().await {
             Some(environment) => Ok(environment),
             None => {
                 let limit = Duration::from_secs(self.policy().await.prepare_timeout_secs);
-                match tokio::time::timeout(limit, self.prepare()).await {
-                    Ok(result) => result,
-                    // A download that never finishes is indistinguishable from
-                    // one that never started, and both must end somewhere.
-                    Err(_) => Err(Error::PrepareTimedOut(limit.as_secs())),
+                let preparation = tokio::time::timeout(limit, self.prepare());
+                tokio::pin!(preparation);
+                tokio::select! {
+                    result = &mut preparation => match result {
+                        Ok(result) => result,
+                        Err(_) => Err(Error::PrepareTimedOut(limit.as_secs())),
+                    },
+                    changed = cancel.changed() => {
+                        if changed.is_ok() && *cancel.borrow() {
+                            Err(Error::StartCancelled)
+                        } else {
+                            match preparation.await {
+                                Ok(result) => result,
+                                Err(_) => Err(Error::PrepareTimedOut(limit.as_secs())),
+                            }
+                        }
+                    },
                 }
             }
         };
 
         let outcome = match environment {
-            Ok(environment) => self.launch(environment).await,
+            Ok(environment) => self.launch(environment, preparation_id).await,
             Err(e) => Err(e),
         };
 
         if let Err(e) = outcome {
-            self.say(format!("could not start: {e}")).await;
-            self.state.lock().await.preparing = None;
-            self.set_status(ServerStatus::Offline).await;
+            let (owned, changed) = {
+                let mut state = self.state.lock().await;
+                if state.preparation_id != preparation_id {
+                    (false, false)
+                } else {
+                    state.preparing = None;
+                    state.preparation_cancel = None;
+                    let changed = if state.status == Some(ServerStatus::Preparing) {
+                        state.status = Some(ServerStatus::Offline);
+                        true
+                    } else {
+                        false
+                    };
+                    (true, changed)
+                }
+            };
+            if !owned {
+                return;
+            }
+            tracing::error!(error = ?e, "server start failed");
+            self.say(format!("could not start: {}", e.client_message()))
+                .await;
+            if changed {
+                self.emit(ServerEvent::Status {
+                    status: ServerStatus::Offline,
+                });
+            }
             return;
         }
 
-        self.state.lock().await.preparing = None;
+        let mut state = self.state.lock().await;
+        if state.preparation_id == preparation_id {
+            state.preparing = None;
+            state.preparation_cancel = None;
+        }
     }
 
     /// Spawn the JVM for an already-resolved environment.
-    async fn launch(self: &Arc<Self>, env: ServerEnvironment) -> Result<()> {
+    async fn launch(self: &Arc<Self>, env: ServerEnvironment, preparation_id: u64) -> Result<()> {
         let config = self.config().await;
-        let mut command = Command::new(&env.java);
+        if crate::environment::absolute(config.directory.clone())
+            != crate::environment::absolute(env.directory.clone())
+        {
+            return Err(Error::InvalidConfiguration(
+                "the launch directory does not match the configured server directory".into(),
+            ));
+        }
+        let server_fs =
+            ScopedFs::open(&env.directory).map_err(|error| Error::io(&env.directory, error))?;
+        let jar_relative = env.jar.strip_prefix(&env.directory).map_err(|_| {
+            Error::InvalidConfiguration("the server jar must be inside its server directory".into())
+        })?;
+        let jar_metadata = server_fs
+            .metadata(jar_relative)
+            .map_err(|error| Error::io(&env.jar, error))?;
+        if !jar_metadata.is_file {
+            return Err(Error::InvalidConfiguration(
+                "the server jar must be a regular file".into(),
+            ));
+        }
+        let mut launch_args: Vec<OsString> = config
+            .memory
+            .jvm_flags()
+            .into_iter()
+            .map(OsString::from)
+            .collect();
+        launch_args.extend(config.jvm_args.iter().cloned().map(OsString::from));
+        launch_args.push(OsString::from("-jar"));
+        launch_args.push(env.jar.clone().into_os_string());
+        launch_args.extend(config.server_args.iter().cloned().map(OsString::from));
+
+        let mut command =
+            crate::sandbox::command(&env.java, &env.directory, &env.jar, &launch_args);
         command
+            .env_clear()
             .current_dir(&env.directory)
-            .args(config.memory.jvm_flags())
-            .args(&config.jvm_args)
-            .arg("-jar")
-            .arg(&env.jar)
-            .args(&config.server_args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             // The JVM outlives a panel restart on purpose: an operator updating
             // the panel should not disconnect everyone playing.
             .kill_on_drop(false);
+
+        for (key, value) in sanitized_environment(std::env::vars_os()) {
+            let name = key.to_string_lossy();
+            if !matches!(
+                name.as_ref(),
+                "HOME" | "USERPROFILE" | "TEMP" | "TMP" | "TMPDIR"
+            ) {
+                command.env(key, value);
+            }
+        }
+        // These variables are useful to Java, but the panel user's home and
+        // global temporary directory are not part of a server's capability.
+        // Point them at the server root even on platforms without a kernel
+        // sandbox; the Linux/macOS wrappers additionally map them inside the
+        // sandbox namespace.
+        command
+            .env("HOME", &env.directory)
+            .env("USERPROFILE", &env.directory)
+            .env("TEMP", &env.directory)
+            .env("TMP", &env.directory)
+            .env("TMPDIR", &env.directory);
 
         let mut child = command.spawn().map_err(|e| Error::io(&env.java, e))?;
 
@@ -371,16 +537,26 @@ impl Guardian {
 
         let generation = {
             let mut state = self.state.lock().await;
+            if state.preparation_id != preparation_id
+                || state.status != Some(ServerStatus::Preparing)
+                || state.intentional
+            {
+                let _ = child.start_kill();
+                return Err(Error::StartCancelled);
+            }
             state.generation += 1;
             state.pid = Some(pid);
             state.stdin = stdin;
             state.started_at = Some(Instant::now());
             state.intentional = false;
             state.child = Some(child);
+            state.status = Some(ServerStatus::Starting);
             state.generation
         };
 
-        self.set_status(ServerStatus::Starting).await;
+        self.emit(ServerEvent::Status {
+            status: ServerStatus::Starting,
+        });
         self.emit(ServerEvent::Started { pid });
         self.say(format!(
             "started {} {} (pid {pid})",
@@ -475,8 +651,8 @@ impl Guardian {
                 guardian
                     .say(format!("server exited unexpectedly with code {code:?}"))
                     .await;
-                guardian.emit(ServerEvent::Crashed { code, attempt });
                 guardian.set_status(ServerStatus::Crashed).await;
+                guardian.emit(ServerEvent::Crashed { code, attempt });
 
                 let policy = guardian.policy().await;
                 if !policy.auto_restart {
@@ -500,8 +676,17 @@ impl Guardian {
                     .await;
                 tokio::time::sleep(Duration::from_secs(policy.retry_delay_secs)).await;
 
+                let still_crashed =
+                    guardian.state.lock().await.status == Some(ServerStatus::Crashed);
+                if !still_crashed {
+                    return;
+                }
+
                 if let Err(e) = guardian.start().await {
-                    guardian.say(format!("restart failed: {e}")).await;
+                    tracing::error!(error = ?e, "automatic restart failed");
+                    guardian
+                        .say(format!("restart failed: {}", e.client_message()))
+                        .await;
                 }
                 return;
             }
@@ -510,6 +695,7 @@ impl Guardian {
 
     /// Send a raw console command to the server's stdin.
     pub async fn command(&self, command: &str) -> Result<()> {
+        validate_command(command)?;
         let mut state = self.state.lock().await;
         let stdin = state.stdin.as_mut().ok_or(Error::ConsoleUnavailable)?;
         stdin.write_all(command.as_bytes()).await?;
@@ -526,10 +712,14 @@ impl Guardian {
     /// exists by the time the lock is taken, this becomes an ordinary kill
     /// rather than a status change that contradicts a running process.
     pub async fn cancel_preparation(&self) -> Result<()> {
-        let launched = {
+        let (launched, changed) = {
             let mut state = self.state.lock().await;
 
-            if let Some(task) = state.preparing.take() {
+            if let Some(cancel) = state.preparation_cancel.take() {
+                let _ = cancel.send(true);
+            } else if let Some(task) = state.preparing.take() {
+                // Reinstall only provisions and can never have a child.  It
+                // therefore remains safe to abort that task outright.
                 task.abort();
             }
 
@@ -540,12 +730,22 @@ impl Guardian {
             if launched {
                 state.intentional = true;
             }
-            launched
+            let changed = if !launched && state.status == Some(ServerStatus::Preparing) {
+                state.status = Some(ServerStatus::Offline);
+                true
+            } else {
+                false
+            };
+            (launched, changed)
         };
 
         if !launched {
             self.say("preparation cancelled").await;
-            self.set_status(ServerStatus::Offline).await;
+            if changed {
+                self.emit(ServerEvent::Status {
+                    status: ServerStatus::Offline,
+                });
+            }
         }
 
         Ok(())
@@ -555,7 +755,7 @@ impl Guardian {
     ///
     /// While [`ServerStatus::Preparing`] this abandons the provision instead.
     pub async fn stop(&self) -> Result<()> {
-        {
+        let preparing = {
             let mut state = self.state.lock().await;
             let current = state.status.unwrap_or(ServerStatus::Offline);
             if !may_stop(current) {
@@ -565,13 +765,21 @@ impl Guardian {
                 });
             }
             if current == ServerStatus::Preparing {
-                drop(state);
-                return self.cancel_preparation().await;
+                true
+            } else {
+                state.intentional = true;
+                state.status = Some(ServerStatus::Stopping);
+                false
             }
-            state.intentional = true;
+        };
+
+        if preparing {
+            return self.cancel_preparation().await;
         }
 
-        self.set_status(ServerStatus::Stopping).await;
+        self.emit(ServerEvent::Status {
+            status: ServerStatus::Stopping,
+        });
 
         // Best effort: if stdin is already gone the process is on its way out
         // anyway, and the timeout below still covers us.
@@ -587,21 +795,67 @@ impl Guardian {
         }
 
         self.say("graceful stop timed out, killing process").await;
-        self.kill().await
+        self.kill().await?;
+        if !self.wait_for_exit(Duration::from_secs(10)).await {
+            return Err(Error::Task(
+                "the server process did not exit after being killed".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Wait until the child handle has been reaped by the supervisor.
+    ///
+    /// This is used by callers that are about to drop the guardian. Since
+    /// child handles deliberately use kill_on_drop(false), dropping one before
+    /// the supervisor observes exit could otherwise leave a live JVM orphaned.
+    pub async fn wait_for_exit(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.state.lock().await.child.is_none() {
+                return true;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            tokio::time::sleep(REAP_INTERVAL.min(remaining)).await;
+        }
     }
 
     /// Terminate the process immediately, without asking.
     ///
     /// While [`ServerStatus::Preparing`] this abandons the provision instead.
     pub async fn kill(&self) -> Result<()> {
-        if self.status().await == ServerStatus::Preparing {
+        let preparing = {
+            let mut state = self.state.lock().await;
+            let current = state.status.unwrap_or(ServerStatus::Offline);
+            if current == ServerStatus::Preparing {
+                true
+            } else {
+                if !current.is_running() {
+                    return Err(Error::InvalidTransition {
+                        current: current.as_str(),
+                        action: "kill",
+                    });
+                }
+                state.intentional = true;
+                let should_emit = current != ServerStatus::Stopping;
+                state.status = Some(ServerStatus::Stopping);
+                if let Some(child) = state.child.as_mut() {
+                    let _ = child.start_kill();
+                }
+                drop(state);
+                if should_emit {
+                    self.emit(ServerEvent::Status {
+                        status: ServerStatus::Stopping,
+                    });
+                }
+                false
+            }
+        };
+        if preparing {
             return self.cancel_preparation().await;
-        }
-
-        let mut state = self.state.lock().await;
-        state.intentional = true;
-        if let Some(child) = state.child.as_mut() {
-            let _ = child.start_kill();
         }
         Ok(())
     }
@@ -621,6 +875,63 @@ impl Guardian {
         }
         self.start().await
     }
+}
+
+/// Environment variables deliberately passed to a Minecraft child.
+///
+/// Java plugins are arbitrary code, so inheriting the panel's complete process
+/// environment would hand them every deployment credential exposed to the
+/// service.  The allow-list contains only values needed for a normal Java
+/// runtime and locale/temp handling.
+pub(crate) fn sanitized_environment(
+    variables: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    const ALLOWED: &[&str] = &[
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "USERPROFILE",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TZ",
+        "SYSTEMROOT",
+        "WINDIR",
+    ];
+
+    variables
+        .into_iter()
+        .filter(|(key, _)| {
+            let key = key.to_string_lossy();
+            ALLOWED.iter().any(|allowed| {
+                if cfg!(windows) {
+                    key.eq_ignore_ascii_case(allowed)
+                } else {
+                    key == *allowed
+                }
+            })
+        })
+        .collect()
+}
+
+/// Validate one command before it is written to the server's stdin.
+pub fn validate_command(command: &str) -> Result<()> {
+    if command.is_empty() {
+        return Err(Error::InvalidCommand("command must not be empty"));
+    }
+    if command.len() > MAX_COMMAND_BYTES || command.len() > MAX_ARGUMENT_BYTES {
+        return Err(Error::InvalidCommand("command is too long"));
+    }
+    if command.contains(['\0', '\r', '\n']) {
+        return Err(Error::InvalidCommand(
+            "command may not contain NUL, carriage-return, or newline characters",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -667,5 +978,38 @@ mod tests {
         assert!(!line_means_online("[INFO]: Done (0.1s)! Loading plugins"));
         assert!(!line_means_online("[INFO]: Preparing spawn area: 84%"));
         assert!(!line_means_online(""));
+    }
+
+    #[test]
+    fn child_environment_excludes_credentials_and_runtime_injection_variables() {
+        let environment = sanitized_environment([
+            ("PATH".into(), "/bin".into()),
+            ("HOME".into(), "/home/panel".into()),
+            ("GH_TOKEN".into(), "secret".into()),
+            ("AWS_SECRET_ACCESS_KEY".into(), "secret".into()),
+            ("JAVA_TOOL_OPTIONS".into(), "-javaagent:evil".into()),
+            ("MCPANEL_PLAYIT_SECRET".into(), "secret".into()),
+        ]);
+
+        assert!(environment.iter().any(|(key, _)| key == "PATH"));
+        assert!(environment.iter().any(|(key, _)| key == "HOME"));
+        assert!(!environment.iter().any(|(key, _)| key == "GH_TOKEN"));
+        assert!(!environment
+            .iter()
+            .any(|(key, _)| key == "AWS_SECRET_ACCESS_KEY"));
+        assert!(!environment
+            .iter()
+            .any(|(key, _)| key == "JAVA_TOOL_OPTIONS"));
+        assert!(!environment
+            .iter()
+            .any(|(key, _)| key == "MCPANEL_PLAYIT_SECRET"));
+    }
+
+    #[test]
+    fn console_commands_have_a_single_bounded_line() {
+        assert!(validate_command("say hello").is_ok());
+        assert!(validate_command("").is_err());
+        assert!(validate_command("say\nstop").is_err());
+        assert!(validate_command(&"x".repeat(MAX_COMMAND_BYTES + 1)).is_err());
     }
 }

@@ -4,7 +4,8 @@ use axum::extract::{Path, State};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use playit_integration::{
-    ClaimInfo, PlayitAccount, PlayitProtocol, PlayitStatus, PlayitTunnel, TunnelCreateInfo,
+    ClaimInfo, PlayitAccount, PlayitConnectionState, PlayitProtocol, PlayitStatus, PlayitTunnel,
+    TunnelCreateInfo,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -53,9 +54,25 @@ pub struct ServerPlayitView {
 async fn status(State(state): State<Arc<AppState>>, _: Identity) -> Json<PlayitStatus> {
     let status = match state.playit.status().await {
         Ok(status) => status,
-        Err(error) => playit_integration::PlayitManager::status_from_error(&error),
+        Err(error) => {
+            tracing::warn!(error = ?error, "Playit status unavailable");
+            safe_status(playit_integration::PlayitManager::status_from_error(&error))
+        }
     };
-    Json(status)
+    Json(safe_status(status))
+}
+
+/// Convert a detailed integration failure into a status message that is safe
+/// to expose over HTTP. The full error is logged above for operators, but it
+/// may contain local paths, IPC details, or secret-file names.
+fn safe_status(mut status: PlayitStatus) -> PlayitStatus {
+    status.message = match status.status {
+        PlayitConnectionState::Unavailable => Some("Playit service unavailable".into()),
+        PlayitConnectionState::Unsupported => Some("Playit service protocol unsupported".into()),
+        PlayitConnectionState::Error => Some("Playit service error".into()),
+        _ => None,
+    };
+    status
 }
 
 /// GET `/api/playit/account`.
@@ -126,6 +143,7 @@ async fn delete_tunnel(
     AdminIdentity(_admin): AdminIdentity,
     Path(tunnel_id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    let _server_lock = state.server_mutation_lock.lock().await;
     state.playit.delete_tunnel(&tunnel_id).await?;
 
     // A direct admin delete must not leave a stale panel association behind.
@@ -176,6 +194,7 @@ async fn attach_server_playit(
     Path(id): Path<String>,
     Json(body): Json<AttachServerTunnelRequest>,
 ) -> ApiResult<Json<ServerPlayitView>> {
+    let _server_lock = state.server_mutation_lock.lock().await;
     let mut record = authorized_server(&state, &admin, &id).await?;
 
     if record.playit.is_some() {
@@ -213,35 +232,36 @@ async fn attach_server_playit(
     let binding_for_store = binding.clone();
     let write = state
         .store
-        .update(
-            |data| match data.servers.iter_mut().find(|server| server.id == id) {
-                None => 0_u8,
-                Some(server) if server.playit.is_some() => 2_u8,
-                Some(server) => {
-                    server.playit = Some(binding_for_store);
-                    1_u8
-                }
-            },
-        )
+        .try_update(move |data| -> ApiResult<()> {
+            let Some(server) = data.servers.iter_mut().find(|server| server.id == id) else {
+                return Err(ApiError::NotFound("server".into()));
+            };
+            if server.playit.is_some() {
+                return Err(ApiError::Conflict(
+                    "this server already has a Playit tunnel".into(),
+                ));
+            }
+            if server.config.port != binding_for_store.local_port {
+                return Err(ApiError::Conflict(
+                    "the server port changed while the Playit tunnel was being created; retry"
+                        .into(),
+                ));
+            }
+            server.playit = Some(binding_for_store);
+            Ok(())
+        })
         .await;
 
     match write {
-        Ok(1) => {}
-        Ok(0) => {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
             let _ = state.playit.delete_tunnel(&binding.tunnel_id).await;
-            return Err(ApiError::NotFound(format!("server {id}")));
-        }
-        Ok(2) => {
-            let _ = state.playit.delete_tunnel(&binding.tunnel_id).await;
-            return Err(ApiError::Conflict(
-                "this server already has a Playit tunnel".into(),
-            ));
+            return Err(error);
         }
         Err(error) => {
             let _ = state.playit.delete_tunnel(&binding.tunnel_id).await;
             return Err(ApiError::Internal(error));
         }
-        Ok(_) => unreachable!(),
     }
 
     record.playit = Some(binding);
@@ -254,6 +274,7 @@ async fn detach_server_playit(
     AdminIdentity(admin): AdminIdentity,
     Path(id): Path<String>,
 ) -> ApiResult<Json<ServerPlayitView>> {
+    let _server_lock = state.server_mutation_lock.lock().await;
     let mut record = authorized_server(&state, &admin, &id).await?;
 
     let Some(binding) = record.playit.clone() else {
@@ -267,14 +288,30 @@ async fn detach_server_playit(
         state.playit.delete_tunnel(&binding.tunnel_id).await?;
     }
 
-    state
+    let cleared = state
         .store
-        .update(|data| {
-            if let Some(server) = data.servers.iter_mut().find(|server| server.id == id) {
+        .try_update(|data| -> ApiResult<bool> {
+            let Some(server) = data.servers.iter_mut().find(|server| server.id == id) else {
+                return Err(ApiError::NotFound("server".into()));
+            };
+            if server
+                .playit
+                .as_ref()
+                .is_some_and(|current| current.tunnel_id == binding.tunnel_id)
+            {
                 server.playit = None;
+                Ok(true)
+            } else {
+                Ok(false)
             }
         })
-        .await?;
+        .await??;
+
+    if !cleared {
+        return Err(ApiError::Conflict(
+            "the server's Playit tunnel changed while it was being detached; retry".into(),
+        ));
+    }
 
     record.playit = None;
     Ok(Json(server_playit_view(&state, &record).await))
@@ -286,7 +323,7 @@ async fn authorized_server(
     id: &str,
 ) -> ApiResult<ServerRecord> {
     if !identity.may_access(id) {
-        return Err(ApiError::Forbidden);
+        return Err(ApiError::NotFound("server".into()));
     }
     state
         .store
@@ -308,12 +345,13 @@ async fn server_playit_view(state: &AppState, record: &ServerRecord) -> ServerPl
     let tunnels = match state.playit.account_tunnels().await {
         Ok(tunnels) => tunnels,
         Err(error) => {
+            tracing::warn!(error = ?error, "Playit status unavailable for server view");
             return ServerPlayitView {
                 state: ServerPlayitState::Unavailable,
                 binding: Some(binding),
                 tunnel: None,
-                message: Some(error.to_string()),
-            }
+                message: Some("Playit service unavailable".into()),
+            };
         }
     };
 
@@ -424,5 +462,20 @@ mod tests {
             Some("survival".into())
         );
         assert!(tunnel_name(Some("x".repeat(101))).is_err());
+    }
+
+    #[test]
+    fn status_diagnostics_do_not_contain_integration_error_details() {
+        let status = safe_status(PlayitStatus {
+            status: PlayitConnectionState::Unavailable,
+            version: None,
+            message: Some("C:\\private\\playit\\secret.toml leaked".into()),
+        });
+
+        assert_eq!(
+            status.message.as_deref(),
+            Some("Playit service unavailable")
+        );
+        assert!(!status.message.as_deref().unwrap().contains("secret.toml"));
     }
 }

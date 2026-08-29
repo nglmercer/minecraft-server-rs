@@ -19,14 +19,23 @@ cargo clippy --workspace --all-targets -- -D warnings
 step "Rust tests"
 cargo test --workspace
 
+step "Rust dependency advisories"
+cargo deny check advisories
+
 step "Frontend tests"
 (cd web && npm test)
+
+step "Frontend dependency advisories"
+(cd web && npm audit --audit-level=high)
 
 step "Frontend build"
 (cd web && npm run build)
 
-step "Release build"
-cargo build --release -p panel
+if [[ ${MCPANEL_SKIP_RELEASE_BUILD:-0} == 1 ]]; then
+  step "Release build (skipped by MCPANEL_SKIP_RELEASE_BUILD)"
+else
+  step "Release build"
+  cargo build --release -p panel
 
 step "Embedded frontend"
 # A release binary that quietly serves the "frontend not built" page would
@@ -46,6 +55,8 @@ if curl -s http://127.0.0.1:8099/ | grep -q 'assets/index-'; then
 else
   echo "ERROR: the release binary is not serving the built frontend" >&2
   exit 1
+fi
+
 fi
 
 printf '\n\033[1;32mAll checks passed.\033[0m\n'

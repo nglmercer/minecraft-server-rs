@@ -5,6 +5,7 @@
 //! not needing one is most of why this is easier to run than Pterodactyl.
 
 use anyhow::{Context, Result};
+use guardian::ScopedFs;
 use playit_integration::PlayitProtocol;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -81,9 +82,15 @@ impl Store {
     /// Load `panel.json` from `data_dir`, starting empty if it does not exist.
     pub async fn load(data_dir: &Path) -> Result<Self> {
         let path = data_dir.join("panel.json");
-        let data = match tokio::fs::read(&path).await {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .with_context(|| format!("{} is not valid panel state", path.display()))?,
+        let root = ScopedFs::open(data_dir)
+            .with_context(|| format!("opening data directory {}", data_dir.display()))?;
+        let data = match root.read_file("panel.json") {
+            Ok(bytes) => {
+                root.set_file_private("panel.json")
+                    .with_context(|| format!("protecting {}", path.display()))?;
+                serde_json::from_slice(&bytes)
+                    .with_context(|| format!("{} is not valid panel state", path.display()))?
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => PanelData::default(),
             Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
         };
@@ -111,24 +118,73 @@ impl Store {
     /// other and that update fails outright.
     pub async fn update<T>(&self, f: impl FnOnce(&mut PanelData) -> T) -> Result<T> {
         let mut guard = self.data.write().await;
-        let out = f(&mut guard);
-        let json = serde_json::to_vec_pretty(&*guard)?;
+        // Work on a private snapshot until the new document is safely on
+        // disk. A failed serialization, write, or rename must not leave the
+        // in-memory state ahead of the only durable state.
+        let mut next = guard.clone();
+        let out = f(&mut next);
+        let json = serde_json::to_vec_pretty(&next)?;
 
-        // Unique per write, so an unrelated process writing beside us — or a
-        // leftover file from an earlier crash — cannot be mistaken for ours.
-        let tmp = self
+        let root = self
             .path
-            .with_extension(format!("json.{}.tmp", std::process::id()));
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| anyhow::anyhow!("panel state has no parent directory"))?;
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let fs = ScopedFs::open(&root)
+                .with_context(|| format!("opening state directory {}", root.display()))?;
+            fs.write_atomic("panel.json", &json)
+                .with_context(|| format!("replacing {}", path.display()))?;
+            Ok(())
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("state write task failed: {error}"))??;
 
-        tokio::fs::write(&tmp, &json)
-            .await
-            .with_context(|| format!("writing {}", tmp.display()))?;
-        tokio::fs::rename(&tmp, &self.path)
-            .await
-            .with_context(|| format!("replacing {}", self.path.display()))?;
-
+        *guard = next;
         drop(guard);
         Ok(out)
+    }
+
+    /// Validate and mutate a state snapshot transactionally.
+    ///
+    /// A closure that returns an error must not accidentally persist the
+    /// partially edited snapshot.  Handlers that enforce an invariant inside
+    /// the closure use this method rather than `update`, so a rejected request
+    /// leaves both memory and disk unchanged.
+    pub async fn try_update<T, E>(
+        &self,
+        f: impl FnOnce(&mut PanelData) -> std::result::Result<T, E>,
+    ) -> Result<std::result::Result<T, E>>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+    {
+        let mut guard = self.data.write().await;
+        let mut next = guard.clone();
+        let value = match f(&mut next) {
+            Ok(value) => value,
+            Err(error) => return Ok(Err(error)),
+        };
+        let json = serde_json::to_vec_pretty(&next)?;
+        let root = self
+            .path
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| anyhow::anyhow!("panel state has no parent directory"))?;
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let fs = ScopedFs::open(&root)
+                .with_context(|| format!("opening state directory {}", root.display()))?;
+            fs.write_atomic("panel.json", &json)
+                .with_context(|| format!("replacing {}", path.display()))?;
+            Ok(())
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("state write task failed: {error}"))??;
+
+        *guard = next;
+        Ok(Ok(value))
     }
 
     /// Find a user by name.
@@ -215,6 +271,39 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn panel_state_is_owner_only_after_atomic_replacement() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::load(tmp.path()).await.unwrap();
+        store
+            .update(|data| data.users.push(user("admin", true)))
+            .await
+            .unwrap();
+
+        let mode = std::fs::metadata(tmp.path().join("panel.json"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_panel_state_symlink_is_rejected_without_touching_its_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("real-panel.json");
+        std::fs::write(&target, b"{}\n").unwrap();
+        std::os::unix::fs::symlink(&target, tmp.path().join("panel.json")).unwrap();
+
+        assert!(Store::load(tmp.path()).await.is_err());
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "{}\n");
+    }
+
     #[tokio::test]
     async fn update_returns_the_closure_result() {
         let tmp = tempfile::tempdir().unwrap();
@@ -230,6 +319,24 @@ mod tests {
             .unwrap();
 
         assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn a_rejected_transaction_does_not_persist_partial_mutations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::load(tmp.path()).await.unwrap();
+
+        let result = store
+            .try_update(|data| -> std::result::Result<(), &'static str> {
+                data.users.push(user("not-saved", false));
+                Err("validation failed")
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result, Err("validation failed"));
+        assert!(store.read().await.users.is_empty());
+        assert!(!tmp.path().join("panel.json").exists());
     }
 
     #[tokio::test]

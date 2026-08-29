@@ -44,10 +44,10 @@ async fn providers(_: Identity) -> ApiResult<Json<Vec<ProviderView>>> {
 }
 
 async fn versions(_: Identity, Path(provider): Path<String>) -> ApiResult<Json<Vec<String>>> {
-    let versions = client()?
-        .versions(&provider)
-        .await
-        .map_err(|e| ApiError::BadRequest(format!("{provider}: {e}")))?;
+    let versions = client()?.versions(&provider).await.map_err(|error| {
+        tracing::warn!(provider = %provider, error = ?error, "failed to load provider versions");
+        ApiError::BadRequest("unable to load provider versions".into())
+    })?;
 
     // Newest first: nobody scrolls to the bottom looking for 1.21.
     let mut out: Vec<String> = versions.into_iter().map(|v| v.to_string()).collect();
@@ -69,7 +69,10 @@ async fn builds(
     let builds = client()?
         .builds(&provider, &version)
         .await
-        .map_err(|e| ApiError::BadRequest(format!("{provider} {version}: {e}")))?;
+        .map_err(|error| {
+            tracing::warn!(provider = %provider, version = %version, error = ?error, "failed to load provider builds");
+            ApiError::BadRequest("unable to load provider builds".into())
+        })?;
 
     Ok(Json(
         builds

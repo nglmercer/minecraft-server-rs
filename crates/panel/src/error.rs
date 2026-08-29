@@ -5,6 +5,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use playit_integration::{PlayitError, ServiceErrorCode};
 use serde_json::json;
+use uuid::Uuid;
 
 /// Every failure an API handler can return.
 #[derive(Debug, thiserror::Error)]
@@ -29,6 +30,10 @@ pub enum ApiError {
     #[error("{0}")]
     Conflict(String),
 
+    /// The caller is temporarily rate limited.
+    #[error("too many requests")]
+    TooManyRequests,
+
     /// A guardian rejected or failed the operation.
     #[error("{0}")]
     Guardian(#[from] guardian::Error),
@@ -50,17 +55,42 @@ impl IntoResponse for ApiError {
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
             ApiError::Conflict(_) => StatusCode::CONFLICT,
+            ApiError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
             // An invalid transition is the client's fault, not the server's.
             ApiError::Guardian(guardian::Error::InvalidTransition { .. }) => StatusCode::CONFLICT,
             ApiError::Playit(error) => playit_status(error),
+            ApiError::Guardian(guardian::Error::InvalidConfiguration(_))
+            | ApiError::Guardian(guardian::Error::InvalidCommand(_))
+            | ApiError::Guardian(guardian::Error::EulaNotAccepted)
+            | ApiError::Guardian(guardian::Error::InvalidBackupId(_))
+            | ApiError::Guardian(guardian::Error::UnsafeArchiveEntry(_))
+            | ApiError::Guardian(guardian::Error::ArchiveLimit(_)) => StatusCode::BAD_REQUEST,
+            ApiError::Guardian(guardian::Error::StartCancelled)
+            | ApiError::Guardian(guardian::Error::ConsoleUnavailable) => StatusCode::CONFLICT,
             ApiError::Guardian(_) | ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
         if status == StatusCode::INTERNAL_SERVER_ERROR {
-            tracing::error!(error = %self, "request failed");
+            let request_id = Uuid::new_v4().simple().to_string();
+            tracing::error!(request_id = %request_id, error = ?self, "request failed");
+            return (
+                status,
+                Json(json!({
+                    "error": "internal server error",
+                    "request_id": request_id,
+                })),
+            )
+                .into_response();
         }
 
-        (status, Json(json!({ "error": self.to_string() }))).into_response()
+        let message = match &self {
+            ApiError::Playit(_) if status.is_server_error() => {
+                "external service unavailable".into()
+            }
+            ApiError::Playit(_) => "external service request failed".into(),
+            _ => self.to_string(),
+        };
+        (status, Json(json!({ "error": message }))).into_response()
     }
 }
 
@@ -86,5 +116,32 @@ fn playit_status(error: &PlayitError) -> StatusCode {
             StatusCode::SERVICE_UNAVAILABLE
         }
         Some(ServiceErrorCode::Internal) | None => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+
+    #[tokio::test]
+    async fn unexpected_errors_return_a_safe_message_and_request_id() {
+        let response = ApiError::Internal(anyhow::anyhow!(
+            "failed to open C:\\private\\panel.json: permission denied"
+        ))
+        .into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains("internal server error"));
+        assert!(text.contains("request_id"));
+        assert!(!text.contains("panel.json"));
+        assert!(!text.contains("permission denied"));
+    }
+
+    #[test]
+    fn expected_errors_keep_their_client_safe_message() {
+        let response = ApiError::BadRequest("path is invalid".into()).into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

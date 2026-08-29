@@ -10,6 +10,7 @@
 
 use crate::config::ServerConfig;
 use crate::error::{Error, Result};
+use crate::fs::ScopedFs;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -71,7 +72,7 @@ impl Installation {
                 return Some(format!("build changed from {} to {pinned}", self.build));
             }
         }
-        if !self.jar.is_file() {
+        if !is_regular_file_without_following(&self.jar) {
             return Some(format!("{} is missing", self.jar.display()));
         }
         if !self.java.is_file() {
@@ -82,20 +83,38 @@ impl Installation {
 
     /// Read the record from a server directory, if one is there and readable.
     pub async fn load(server_dir: &Path) -> Option<Self> {
-        let bytes = tokio::fs::read(server_dir.join(FILENAME)).await.ok()?;
-        // A corrupt record is treated as no record: reinstalling is recoverable,
-        // refusing to start is not.
-        serde_json::from_slice(&bytes).ok()
+        let server_dir = server_dir.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let fs = ScopedFs::open(server_dir).ok()?;
+            let bytes = fs.read_file(FILENAME).ok()?;
+            // A corrupt record is treated as no record: reinstalling is
+            // recoverable, refusing to start is not.
+            serde_json::from_slice(&bytes).ok()
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     /// Write the record into a server directory.
     pub async fn save(&self, server_dir: &Path) -> Result<()> {
-        let path = server_dir.join(FILENAME);
         let body = serde_json::to_vec_pretty(self)?;
-        tokio::fs::write(&path, body)
-            .await
-            .map_err(|e| Error::io(&path, e))
+        let directory = server_dir.to_path_buf();
+        let path = directory.join(FILENAME);
+        tokio::task::spawn_blocking(move || {
+            let fs = ScopedFs::open(&directory).map_err(|e| Error::io(&path, e))?;
+            fs.write_atomic(FILENAME, &body)
+                .map_err(|e| Error::io(&path, e))
+        })
+        .await
+        .map_err(|e| Error::Task(e.to_string()))?
     }
+}
+
+fn is_regular_file_without_following(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_type().is_file())
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

@@ -8,19 +8,30 @@ use argon2::password_hash::{
     rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString,
 };
 use argon2::Argon2;
+use axum::body::Body;
 use axum::extract::FromRequestParts;
-use axum::http::request::Parts;
+use axum::http::{header, request::Parts, Method, Request};
+use axum::middleware::Next;
+use axum::response::Response;
 use rand::RngCore;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
+use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 
 use crate::error::ApiError;
 use crate::state::AppState;
 
 /// How long a session survives without being used.
 const SESSION_TTL: Duration = Duration::from_secs(60 * 60 * 24 * 7);
+const MAX_SESSIONS: usize = 4096;
+const MAX_LOGIN_KEYS: usize = 4096;
+const LOGIN_KEY_TTL: Duration = Duration::from_secs(60 * 30);
+const MAX_VERIFICATIONS: usize = 8;
+pub(crate) const SESSION_COOKIE: &str = "mcpanel_session";
+pub(crate) const CSRF_COOKIE: &str = "mcpanel_csrf";
 
 /// Hash a password for storage.
 pub fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error> {
@@ -56,6 +67,119 @@ pub fn generate_password() -> String {
         .iter()
         .map(|b| ALPHABET[*b as usize % ALPHABET.len()] as char)
         .collect()
+}
+
+#[derive(Debug)]
+struct LoginAttempt {
+    failures: u32,
+    blocked_until: Instant,
+    last_seen: Instant,
+}
+
+/// Bounded, in-memory login abuse controls.
+pub struct LoginLimiter {
+    attempts: std::sync::Mutex<HashMap<String, LoginAttempt>>,
+    verifier: Arc<Semaphore>,
+}
+
+impl Default for LoginLimiter {
+    fn default() -> Self {
+        let parallelism = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(2)
+            .clamp(1, MAX_VERIFICATIONS);
+        Self {
+            attempts: std::sync::Mutex::new(HashMap::new()),
+            verifier: Arc::new(Semaphore::new(parallelism)),
+        }
+    }
+}
+
+impl LoginLimiter {
+    fn keys(ip: &str, username: &str) -> [String; 2] {
+        let mut hasher = DefaultHasher::new();
+        username.hash(&mut hasher);
+        [
+            format!("ip:{}", ip.chars().take(128).collect::<String>()),
+            format!("user:{:016x}", hasher.finish()),
+        ]
+    }
+
+    /// Return a retry duration when either the IP or username is cooling down.
+    pub fn retry_after(&self, ip: &str, username: &str) -> Option<Duration> {
+        let now = Instant::now();
+        let keys = Self::keys(ip, username);
+        let mut attempts = self.attempts.lock().ok()?;
+        attempts.retain(|_, attempt| now.duration_since(attempt.last_seen) < LOGIN_KEY_TTL);
+        keys.iter()
+            .filter_map(|key| attempts.get(key))
+            .filter_map(|attempt| attempt.blocked_until.checked_duration_since(now))
+            .max()
+    }
+
+    /// Acquire one of the small number of Argon2 workers without queuing an
+    /// unbounded attacker-controlled number of expensive requests.
+    pub fn try_verification(&self) -> Option<OwnedSemaphorePermit> {
+        Arc::clone(&self.verifier).try_acquire_owned().ok()
+    }
+
+    pub fn failure(&self, ip: &str, username: &str) {
+        let now = Instant::now();
+        let keys = Self::keys(ip, username);
+        let Ok(mut attempts) = self.attempts.lock() else {
+            return;
+        };
+        attempts.retain(|_, attempt| now.duration_since(attempt.last_seen) < LOGIN_KEY_TTL);
+        for key in keys {
+            if attempts.len() >= MAX_LOGIN_KEYS && !attempts.contains_key(&key) {
+                if let Some(oldest) = attempts
+                    .iter()
+                    .min_by_key(|(_, attempt)| attempt.last_seen)
+                    .map(|(key, _)| key.clone())
+                {
+                    attempts.remove(&oldest);
+                }
+            }
+            let attempt = attempts.entry(key).or_insert(LoginAttempt {
+                failures: 0,
+                blocked_until: now,
+                last_seen: now,
+            });
+            attempt.failures = attempt.failures.saturating_add(1);
+            let seconds = if attempt.failures < 2 {
+                0
+            } else {
+                1_u64 << attempt.failures.saturating_sub(2).min(5)
+            };
+            attempt.blocked_until = now + Duration::from_secs(seconds);
+            attempt.last_seen = now;
+        }
+    }
+
+    pub fn success(&self, ip: &str, username: &str) {
+        if let Ok(mut attempts) = self.attempts.lock() {
+            for key in Self::keys(ip, username) {
+                attempts.remove(&key);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tracked_keys(&self) -> usize {
+        self.attempts
+            .lock()
+            .map(|attempts| attempts.len())
+            .unwrap_or(0)
+    }
+}
+
+pub(crate) fn dummy_hash_for_login() -> String {
+    static HASH: OnceLock<String> = OnceLock::new();
+    HASH.get_or_init(|| {
+        hash_password("mcpanel-invalid-login-dummy")
+            .expect("the built-in dummy password hash must be constructible")
+    })
+    .clone()
 }
 
 /// A logged-in user, as carried by a session.
@@ -97,6 +221,16 @@ impl Sessions {
         // only noticed when someone presents them, so a panel that runs for
         // months accumulates sessions nobody will ever resolve again.
         sessions.retain(|_, session| session.last_seen.elapsed() < SESSION_TTL);
+        while sessions.len() >= MAX_SESSIONS {
+            let Some(oldest) = sessions
+                .iter()
+                .min_by_key(|(_, session)| session.last_seen)
+                .map(|(token, _)| token.clone())
+            else {
+                break;
+            };
+            sessions.remove(&oldest);
+        }
 
         sessions.insert(
             token.clone(),
@@ -134,31 +268,69 @@ impl Sessions {
     }
 }
 
-/// Pull the bearer token out of the `Authorization` header.
+/// Read credentials from the Authorization header or the session cookie.
 ///
-/// A `?token=` fallback exists for the WebSocket handshake alone, because
-/// browsers cannot set headers on one. It is restricted to that route on
-/// purpose: a token in a query string is copied into browser history, into
-/// proxy logs, and into this panel's own request log, so it must not become the
-/// convenient way to authenticate anything else.
-fn extract_token(parts: &Parts) -> Option<String> {
-    if let Some(value) = parts.headers.get(axum::http::header::AUTHORIZATION) {
+/// WebSocket handshakes use short-lived scoped tickets, not session tokens.
+pub(crate) fn cookie_value(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(header::COOKIE)?
+        .to_str()
+        .ok()?
+        .split(';')
+        .filter_map(|part| part.trim().split_once('='))
+        .find_map(|(key, value)| (key == name).then(|| value.to_string()))
+}
+
+/// Pull the session token from the bearer header or HttpOnly session cookie.
+pub(crate) fn token_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
+    if let Some(value) = headers.get(header::AUTHORIZATION) {
         if let Ok(text) = value.to_str() {
             if let Some(token) = text.strip_prefix("Bearer ") {
                 return Some(token.trim().to_string());
             }
         }
     }
+    cookie_value(headers, SESSION_COOKIE)
+}
 
-    if !parts.uri.path().ends_with("/ws") {
-        return None;
+fn extract_token(parts: &Parts) -> Option<String> {
+    token_from_headers(&parts.headers)
+}
+
+fn csrf_valid(headers: &axum::http::HeaderMap) -> bool {
+    let Some(cookie) = cookie_value(headers, CSRF_COOKIE) else {
+        return false;
+    };
+    let Some(header_value) = headers
+        .get("x-csrf-token")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+    use subtle::ConstantTimeEq;
+    cookie.as_bytes().ct_eq(header_value.as_bytes()).into()
+}
+
+/// Require a CSRF token when a state-changing request is authenticated by a
+/// browser cookie. Bearer-only API clients remain stateless and do not need a
+/// cookie CSRF token.
+pub(crate) async fn csrf_protect(request: Request<Body>, next: Next) -> Result<Response, ApiError> {
+    let safe_method = matches!(
+        request.method(),
+        &Method::GET | &Method::HEAD | &Method::OPTIONS | &Method::TRACE
+    );
+    let is_login = request.uri().path() == "/api/auth/login";
+    let has_bearer = request.headers().contains_key(header::AUTHORIZATION);
+    let has_session_cookie = cookie_value(request.headers(), SESSION_COOKIE).is_some();
+    if !safe_method
+        && !is_login
+        && has_session_cookie
+        && !has_bearer
+        && !csrf_valid(request.headers())
+    {
+        return Err(ApiError::Forbidden);
     }
-
-    let query = parts.uri.query()?;
-    query.split('&').find_map(|pair| {
-        let (key, value) = pair.split_once('=')?;
-        (key == "token").then(|| value.to_string())
-    })
+    Ok(next.run(request).await)
 }
 
 impl FromRequestParts<Arc<AppState>> for Identity {
@@ -321,14 +493,14 @@ mod tests {
     }
 
     #[test]
-    fn websockets_may_pass_the_token_in_the_query_string() {
-        // Browsers cannot set headers on a WebSocket handshake, so this path
-        // has to work — but only as a fallback.
+    fn query_string_tokens_are_never_authentication_credentials() {
+        // WebSockets use a short-lived, one-use ticket. Long-lived session
+        // tokens must never be accepted from a URL.
         let parts = parts_for("/api/servers/x/ws?token=abc123", None);
-        assert_eq!(extract_token(&parts).as_deref(), Some("abc123"));
+        assert!(extract_token(&parts).is_none());
 
         let with_others = parts_for("/api/servers/x/ws?foo=1&token=abc123&bar=2", None);
-        assert_eq!(extract_token(&with_others).as_deref(), Some("abc123"));
+        assert!(extract_token(&with_others).is_none());
     }
 
     #[test]
@@ -360,5 +532,24 @@ mod tests {
         // A non-bearer scheme is not a token the panel understands.
         assert!(extract_token(&parts_for("/api/servers", Some("Basic abc"))).is_none());
         assert!(extract_token(&parts_for("/api/servers?tokenish=x", None)).is_none());
+    }
+
+    #[test]
+    fn login_keys_bound_unicode_ip_input_without_panicking() {
+        let limiter = LoginLimiter::default();
+        limiter.failure(&"é".repeat(200), "alice");
+        assert!(limiter.tracked_keys() <= 2);
+    }
+
+    #[test]
+    fn repeated_failures_activate_a_cooldown_and_success_clears_it() {
+        let limiter = LoginLimiter::default();
+        limiter.failure("127.0.0.1", "alice");
+        assert!(limiter.retry_after("127.0.0.1", "alice").is_none());
+        limiter.failure("127.0.0.1", "alice");
+        assert!(limiter.retry_after("127.0.0.1", "alice").is_some());
+
+        limiter.success("127.0.0.1", "alice");
+        assert!(limiter.retry_after("127.0.0.1", "alice").is_none());
     }
 }

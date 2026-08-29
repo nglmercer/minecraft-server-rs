@@ -6,6 +6,7 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use futures_util::StreamExt;
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio_util::io::ReaderStream;
@@ -22,14 +23,14 @@ async fn authorized(
     id: &str,
 ) -> ApiResult<std::path::PathBuf> {
     if !identity.may_access(id) {
-        return Err(ApiError::Forbidden);
+        return Err(ApiError::NotFound("server".into()));
     }
     state
         .store
         .server(id)
         .await
         .map(|record| record.config.directory)
-        .ok_or_else(|| ApiError::NotFound(format!("server {id}")))
+        .ok_or_else(|| ApiError::NotFound("server".into()))
 }
 
 async fn list(
@@ -56,6 +57,31 @@ async fn create(
 ) -> ApiResult<Json<guardian::Backup>> {
     let directory = authorized(&state, &identity, &id).await?;
     let note = body.map(|Json(b)| b.note).unwrap_or_default();
+    if note.len() > 1024 || note.contains(['\0', '\r', '\n']) {
+        return Err(ApiError::BadRequest(
+            "backup note is too long or contains control characters".into(),
+        ));
+    }
+    let _resource_lock = state.resource_lock.lock().await;
+
+    let backup_dir = state.backup_dir(&id);
+    crate::state::secure_directory(&backup_dir)
+        .await
+        .map_err(ApiError::Internal)?;
+    let quota_fs = crate::filesystem::open(backup_dir.clone()).await?;
+    let backup_usage = tokio::task::spawn_blocking(move || quota_fs.directory_size("."))
+        .await
+        .map_err(|error| ApiError::Internal(anyhow::anyhow!("backup quota check failed: {error}")))?
+        .map_err(|error| ApiError::Internal(error.into()))?;
+    const METADATA_RESERVE: u64 = 64 * 1024;
+    let available = state
+        .limits
+        .max_backup_disk_bytes
+        .saturating_sub(backup_usage)
+        .saturating_sub(METADATA_RESERVE);
+    if available == 0 {
+        return Err(ApiError::Conflict("backup storage quota exceeded".into()));
+    }
 
     // Taking a backup while chunks are being written produces a torn world, so
     // flush first and let the server keep running.
@@ -65,7 +91,17 @@ async fn create(
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
 
-    let backup = guardian::backup::create(&directory, &state.backup_dir(&id), note).await?;
+    let backup =
+        guardian::backup::create_with_limit(&directory, &backup_dir, note, available).await?;
+    let usage_fs = crate::filesystem::open(backup_dir.clone()).await?;
+    let usage = tokio::task::spawn_blocking(move || usage_fs.directory_size("."))
+        .await
+        .map_err(|error| ApiError::Internal(anyhow::anyhow!("backup quota check failed: {error}")))?
+        .map_err(|error| ApiError::Internal(error.into()))?;
+    if usage > state.limits.max_backup_disk_bytes {
+        let _ = guardian::backup::delete(&backup_dir, &backup.id).await;
+        return Err(ApiError::Conflict("backup storage quota exceeded".into()));
+    }
     tracing::info!(server = %id, backup = %backup.id, "backup created");
     Ok(Json(backup))
 }
@@ -75,6 +111,7 @@ async fn restore(
     identity: Identity,
     Path((id, backup)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    let _server_lock = state.server_mutation_lock.lock().await;
     let directory = authorized(&state, &identity, &id).await?;
 
     // Unpacking a world under a live JVM corrupts it, so this is a hard error
@@ -85,7 +122,14 @@ async fn restore(
         ));
     }
 
-    guardian::backup::restore(&state.backup_dir(&id), &backup, &directory).await?;
+    let _resource_lock = state.resource_lock.lock().await;
+    guardian::backup::restore_with_limits(
+        &state.backup_dir(&id),
+        &backup,
+        &directory,
+        state.limits.archive_limits(),
+    )
+    .await?;
     tracing::info!(server = %id, backup = %backup, "backup restored");
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -95,6 +139,7 @@ async fn delete(
     identity: Identity,
     Path((id, backup)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    let _resource_lock = state.resource_lock.lock().await;
     authorized(&state, &identity, &id).await?;
     guardian::backup::delete(&state.backup_dir(&id), &backup).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
@@ -107,7 +152,19 @@ async fn download_ticket(
     Path((id, backup)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     authorized(&state, &identity, &id).await?;
-    guardian::backup::path_of(&state.backup_dir(&id), &backup)?;
+    let backup_fs = crate::filesystem::open(state.backup_dir(&id)).await?;
+    let archive_name = format!("{backup}.tar.gz");
+    let exists = tokio::task::spawn_blocking(move || {
+        backup_fs
+            .metadata(&archive_name)
+            .map(|metadata| metadata.is_file)
+    })
+    .await
+    .map_err(|error| ApiError::Internal(anyhow::anyhow!("backup check failed: {error}")))?
+    .map_err(|_| ApiError::NotFound("backup".into()))?;
+    if !exists {
+        return Err(ApiError::NotFound("backup".into()));
+    }
 
     let ticket = state.tickets.issue(Resource::Backup { server: id, backup });
     Ok(Json(serde_json::json!({ "ticket": ticket })))
@@ -125,6 +182,11 @@ async fn download(
     Path((id, backup)): Path<(String, String)>,
     axum::extract::Query(query): axum::extract::Query<TicketQuery>,
 ) -> ApiResult<Response> {
+    let download_slot = state
+        .download_slots
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ApiError::TooManyRequests)?;
     let granted = state
         .tickets
         .redeem(&query.ticket)
@@ -141,13 +203,19 @@ async fn download(
         return Err(ApiError::Unauthorized);
     }
 
-    let path = guardian::backup::path_of(&state.backup_dir(&id), &backup)?;
-    let file = tokio::fs::File::open(&path)
+    let fs = crate::filesystem::open(state.backup_dir(&id)).await?;
+    let archive_name = format!("{backup}.tar.gz");
+    let file = tokio::task::spawn_blocking(move || fs.open_file(&archive_name))
         .await
-        .map_err(|e| ApiError::Internal(e.into()))?;
+        .map_err(|error| ApiError::Internal(anyhow::anyhow!("backup open failed: {error}")))?
+        .map_err(|_| ApiError::NotFound("backup".into()))?;
+    let file = tokio::fs::File::from_std(file);
 
     // Streamed rather than buffered: a world backup can be gigabytes.
-    let stream = ReaderStream::new(file);
+    let stream = ReaderStream::new(file).map(move |chunk| {
+        let _keep_slot = &download_slot;
+        chunk
+    });
 
     Ok((
         StatusCode::OK,

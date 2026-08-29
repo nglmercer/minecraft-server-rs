@@ -2,17 +2,18 @@
 
 use anyhow::{Context, Result};
 use clap::ValueEnum;
-use guardian::Guardian;
+use guardian::{Guardian, ScopedFs};
 use playit_integration::PlayitManager;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock, Semaphore};
 
-use crate::auth::Sessions;
+use crate::auth::{LoginLimiter, Sessions};
 use crate::error::ApiError;
+use crate::limits::ResourceLimits;
 use crate::metrics::Metrics;
-use crate::store::{ServerRecord, Store};
+use crate::store::{PanelData, ServerRecord, Store};
 use crate::tickets::Tickets;
 
 /// The Playit backend used by the panel.
@@ -31,6 +32,8 @@ pub struct AppState {
     pub store: Arc<Store>,
     /// In-memory sessions.
     pub sessions: Sessions,
+    /// Bounded login-attempt accounting and Argon2 concurrency control.
+    pub login_limiter: LoginLimiter,
     /// One live guardian per configured server.
     guardians: RwLock<HashMap<String, Arc<Guardian>>>,
     /// Root for Playit state, JDKs, server directories and `panel.json`.
@@ -41,6 +44,18 @@ pub struct AppState {
     pub tickets: Tickets,
     /// The panel's embedded or explicitly external Playit integration.
     pub playit: Arc<PlayitManager>,
+    /// Installation-wide request/filesystem resource limits.
+    pub limits: ResourceLimits,
+    /// Serializes operations whose quota is measured before bytes are emitted.
+    pub resource_lock: Mutex<()>,
+    /// Bounds open file descriptors held by browser downloads.
+    pub download_slots: Arc<Semaphore>,
+    /// Bounds live WebSocket connections and their associated tasks.
+    pub websocket_slots: Arc<Semaphore>,
+    /// Serializes server record/guardian/Playit mutations that must be observed
+    /// as one lifecycle.  In particular, a delete cannot race an attachment
+    /// into leaving an untracked public tunnel behind.
+    pub server_mutation_lock: Mutex<()>,
 }
 
 impl AppState {
@@ -48,12 +63,23 @@ impl AppState {
     ///
     /// Guardians are created but not started: a panel restart must not silently
     /// bring servers back up that the operator had stopped.
+    #[allow(dead_code)]
     pub async fn bootstrap(
         data_dir: impl Into<PathBuf>,
         playit_mode: PlayitMode,
     ) -> Result<Arc<Self>> {
+        Self::bootstrap_with_limits(data_dir, playit_mode, ResourceLimits::default()).await
+    }
+
+    /// Build state with explicit resource limits.
+    pub async fn bootstrap_with_limits(
+        data_dir: impl Into<PathBuf>,
+        playit_mode: PlayitMode,
+        limits: ResourceLimits,
+    ) -> Result<Arc<Self>> {
+        limits.validate()?;
         let data_dir = data_dir.into();
-        tokio::fs::create_dir_all(data_dir.join("servers"))
+        tokio::fs::create_dir_all(&data_dir)
             .await
             .with_context(|| format!("creating {}", data_dir.display()))?;
 
@@ -63,9 +89,20 @@ impl AppState {
         let data_dir = tokio::fs::canonicalize(&data_dir)
             .await
             .with_context(|| format!("resolving {}", data_dir.display()))?;
+        #[cfg(unix)]
+        tokio::fs::set_permissions(
+            &data_dir,
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .await
+        .with_context(|| format!("protecting {}", data_dir.display()))?;
+        secure_directory(&data_dir.join("servers")).await?;
+        secure_directory(&data_dir.join("backups")).await?;
+        secure_directory(&data_dir.join("playit")).await?;
+        secure_directory(&data_dir.join("jdks")).await?;
 
         let store = Arc::new(Store::load(&data_dir).await?);
-        migrate_relative_directories(&store, &data_dir).await?;
+        normalize_server_records(&store, &data_dir, limits.max_server_memory_mb).await?;
 
         let playit = match playit_mode {
             PlayitMode::Embedded => {
@@ -85,6 +122,23 @@ impl AppState {
             }
             PlayitMode::External => PlayitManager::external(),
         };
+        if tokio::fs::symlink_metadata(data_dir.join("playit").join("secret.toml"))
+            .await
+            .is_ok()
+        {
+            let playit_dir = data_dir.join("playit");
+            let secret = playit_dir.join("secret.toml");
+            let secret_for_task = secret.clone();
+            tokio::task::spawn_blocking(move || -> Result<()> {
+                let fs = ScopedFs::open(&playit_dir)
+                    .with_context(|| format!("opening {}", playit_dir.display()))?;
+                fs.set_file_private("secret.toml")
+                    .with_context(|| format!("protecting {}", secret_for_task.display()))?;
+                Ok(())
+            })
+            .await
+            .with_context(|| format!("protecting {}", secret.display()))??;
+        }
 
         let mut guardians = HashMap::new();
         for record in store.read().await.servers {
@@ -94,11 +148,21 @@ impl AppState {
         Ok(Arc::new(AppState {
             store,
             sessions: Sessions::default(),
+            login_limiter: LoginLimiter::default(),
             guardians: RwLock::new(guardians),
             data_dir,
             metrics: Metrics::default(),
             tickets: Tickets::default(),
             playit: Arc::new(playit),
+            limits,
+            resource_lock: Mutex::new(()),
+            download_slots: Arc::new(Semaphore::new(
+                crate::limits::DEFAULT_MAX_CONCURRENT_DOWNLOADS,
+            )),
+            websocket_slots: Arc::new(Semaphore::new(
+                crate::limits::DEFAULT_MAX_CONCURRENT_WEBSOCKETS,
+            )),
+            server_mutation_lock: Mutex::new(()),
         }))
     }
 
@@ -124,8 +188,20 @@ impl AppState {
 
     /// Drop a guardian, killing its process if one is running.
     pub async fn remove_guardian(&self, id: &str) {
-        if let Some(guardian) = self.guardians.write().await.remove(id) {
-            let _ = guardian.kill().await;
+        let guardian = self.guardians.read().await.get(id).cloned();
+        if let Some(guardian) = guardian {
+            let _ = guardian.stop().await;
+            if !guardian
+                .wait_for_exit(std::time::Duration::from_secs(10))
+                .await
+            {
+                tracing::error!(
+                    server = %id,
+                    "server process did not exit; retaining guardian to avoid an orphan"
+                );
+                return;
+            }
+            self.guardians.write().await.remove(id);
         }
     }
 
@@ -138,36 +214,42 @@ impl AppState {
     pub fn backup_dir(&self, id: &str) -> PathBuf {
         self.data_dir.join("backups").join(id)
     }
+
+    /// Remove a just-created server directory through its parent capability.
+    /// This is used only when a concurrent store update rejects a new record.
+    pub async fn remove_uncommitted_server_dir(&self, id: &str) {
+        let root = self.data_dir.join("servers");
+        let id = id.to_owned();
+        let _ = tokio::task::spawn_blocking(move || {
+            guardian::ScopedFs::open(root).and_then(|fs| fs.remove(id))
+        })
+        .await;
+    }
 }
 
 fn spawn_guardian(record: &ServerRecord, data_dir: &Path) -> Arc<Guardian> {
     Guardian::new(record.config.clone(), record.policy.clone(), data_dir)
 }
 
-/// Rewrite server directories that were stored relative to the panel's cwd.
+/// Rewrite server directories to the panel-managed roots and validate the
+/// complete persisted state before any guardian is made runnable.
 ///
 /// Earlier versions saved whatever `--data-dir` was given, so an install
 /// started with the default `./data` has unusable paths on disk. Rewriting them
 /// once at startup repairs those installs instead of leaving them permanently
 /// unable to launch.
-async fn migrate_relative_directories(store: &Store, data_dir: &Path) -> Result<()> {
-    let needs_migration = store
-        .read()
-        .await
-        .servers
-        .iter()
-        .any(|record| record.config.directory.is_relative());
-
-    if !needs_migration {
-        return Ok(());
-    }
-
+async fn normalize_server_records(
+    store: &Store,
+    data_dir: &Path,
+    max_memory_mb: u32,
+) -> Result<()> {
     let servers_root = data_dir.join("servers");
     store
-        .update(|data| {
-            for record in data.servers.iter_mut() {
-                if record.config.directory.is_relative() {
-                    let repaired = servers_root.join(&record.id);
+        .try_update(|data| -> Result<()> {
+            validate_persisted_invariants(data, max_memory_mb)?;
+            for record in &mut data.servers {
+                let repaired = servers_root.join(&record.id);
+                if record.config.directory != repaired {
                     tracing::info!(
                         server = %record.id,
                         from = %record.config.directory.display(),
@@ -177,9 +259,110 @@ async fn migrate_relative_directories(store: &Store, data_dir: &Path) -> Result<
                     record.config.directory = repaired;
                 }
             }
+            Ok(())
         })
-        .await?;
+        .await??;
 
+    for record in store.read().await.servers {
+        secure_directory(&record.config.directory).await?;
+    }
+
+    Ok(())
+}
+
+fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '_'
+        })
+}
+
+fn validate_persisted_invariants(data: &PanelData, max_memory_mb: u32) -> Result<()> {
+    let mut usernames = std::collections::HashSet::new();
+    if !data.users.is_empty() && !data.users.iter().any(|user| user.admin) {
+        anyhow::bail!("panel state has no administrator account");
+    }
+    for user in &data.users {
+        if user.username.trim().is_empty()
+            || user.username.len() > 128
+            || user.username.contains(['\0', '\r', '\n'])
+            || !usernames.insert(&user.username)
+        {
+            anyhow::bail!("panel state contains an invalid or duplicate username");
+        }
+    }
+
+    let mut ids = std::collections::HashSet::new();
+    let mut ports = std::collections::HashSet::new();
+    let mut total_memory_mb = 0_u64;
+    for record in &data.servers {
+        if !valid_id(&record.id) || !ids.insert(&record.id) {
+            anyhow::bail!("panel state contains an invalid or duplicate server id");
+        }
+        if record.name.trim().is_empty()
+            || record.name.len() > 128
+            || record.name.contains(['\0', '\r', '\n'])
+        {
+            anyhow::bail!("panel state contains an invalid server name");
+        }
+        record
+            .config
+            .validate()
+            .map_err(|error| anyhow::anyhow!("invalid server {}: {error}", record.id))?;
+        if record.config.memory.max_mb > max_memory_mb {
+            anyhow::bail!("server {} exceeds the configured memory maximum", record.id);
+        }
+        total_memory_mb = total_memory_mb
+            .checked_add(record.config.memory.max_mb as u64)
+            .ok_or_else(|| anyhow::anyhow!("panel state exceeds the host memory budget"))?;
+        if total_memory_mb > max_memory_mb as u64 {
+            anyhow::bail!("panel state exceeds the aggregate host memory budget");
+        }
+        record
+            .policy
+            .validate()
+            .map_err(|error| anyhow::anyhow!("invalid policy for server {}: {error}", record.id))?;
+        if !ports.insert(record.config.port) {
+            anyhow::bail!("panel state assigns one port to multiple servers");
+        }
+        if let Some(binding) = &record.playit {
+            if binding.local_port == 0
+                || (binding.local_address != "127.0.0.1" && binding.local_address != "::1")
+            {
+                anyhow::bail!("panel state contains an unsafe Playit destination");
+            }
+        }
+    }
+
+    for user in &data.users {
+        let mut assigned = std::collections::HashSet::new();
+        if user.servers.len() > 1024 {
+            anyhow::bail!("panel state contains too many server permissions");
+        }
+        for id in &user.servers {
+            if !ids.contains(id) || !assigned.insert(id) {
+                anyhow::bail!("panel state contains an invalid server permission");
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) async fn secure_directory(path: &Path) -> Result<()> {
+    tokio::fs::create_dir_all(path)
+        .await
+        .with_context(|| format!("creating {}", path.display()))?;
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let fs = guardian::ScopedFs::open(&path)
+            .map_err(|error| anyhow::anyhow!("opening {}: {error}", path.display()))?;
+        fs.set_private()
+            .map_err(|error| anyhow::anyhow!("protecting {}: {error}", path.display()))?;
+        Ok(())
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("protecting directory: {error}"))??;
     Ok(())
 }
 
