@@ -18,6 +18,9 @@ env:
   # something diagnosable without pushing a "add a println" commit.
   RUST_BACKTRACE: 1
 
+permissions:
+  contents: read
+
 jobs:
   backend:
     name: Rust (${{ matrix.os }})
@@ -29,17 +32,17 @@ jobs:
         os: [ubuntu-latest, windows-latest]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           # java-path and minecraft-core are submodules; without this the
           # workspace does not resolve at all.
           submodules: recursive
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable (2026-08-28)
         with:
           components: clippy, rustfmt
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           key: ${{ matrix.os }}
 
@@ -52,6 +55,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Dependency advisories
+        run: |
+          cargo install cargo-deny --locked
+          cargo deny check advisories
+
       - name: Test
         # Windows is in the matrix deliberately. The supervisor tests spawn real
         # child processes, and process handling is the part most likely to
@@ -63,9 +71,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -74,6 +82,10 @@ jobs:
       - name: Install
         working-directory: web
         run: npm ci
+
+      - name: Dependency advisories
+        working-directory: web
+        run: npm audit --audit-level=high
 
       - name: Test
         working-directory: web
@@ -92,17 +104,17 @@ jobs:
     needs: [backend, frontend]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable (2026-08-28)
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           key: release
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -127,7 +139,7 @@ jobs:
             || { echo "::error::the release binary is not serving the built frontend"; echo "$page" | head -20; exit 1; }
           echo "frontend embedded and served"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: mcpanel-linux-x86_64
           path: target/release/mcpanel
