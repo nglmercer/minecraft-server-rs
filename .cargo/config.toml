@@ -1,0 +1,6 @@
+# Short, consistent commands for the local edit/check loop. These aliases do
+# not change CI's full validation commands.
+[alias]
+dev-check = "check --workspace"
+dev-clippy = "clippy --workspace --no-deps -- -D warnings"
+workspace-test = "test --workspace"

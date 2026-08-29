@@ -10,9 +10,16 @@ cd "$(dirname "$0")"
 echo "==> building frontend"
 (cd web && npm install --silent && npm run build)
 
-echo "==> building panel"
-cargo build --release -p panel
+if [[ ${MCPANEL_FAST:-0} == 1 ]]; then
+  echo "==> building panel (debug profile)"
+  cargo build -p panel
+  binary="target/debug/mcpanel"
+else
+  echo "==> building panel (release profile)"
+  cargo build --release -p panel
+  binary="target/release/mcpanel"
+fi
 
 echo
-echo "Built target/release/mcpanel ($(du -h target/release/mcpanel | cut -f1))"
-echo "Run it with: ./target/release/mcpanel --data-dir ./data --bind 0.0.0.0:8080"
+echo "Built ${binary} ($(du -h "${binary}" | cut -f1))"
+echo "Run it with: ${binary} --data-dir ./data --bind 0.0.0.0:8080"

@@ -408,6 +408,31 @@ compile error rather than a `{missing}` in the UI. To add a language, copy
 
 ## Testing
 
+For a quick local Rust loop, use `cargo check` instead of a full build: it
+type-checks without linking an executable. The workspace also provides aliases
+for the common commands:
+
+```sh
+cargo dev-check                         # fast workspace check
+cargo dev-clippy                        # fast workspace-only Clippy
+cargo workspace-test                    # full Rust test suite
+```
+
+On a memory-constrained machine, limit Cargo's parallel jobs for a more
+responsive desktop. Two jobs is a useful starting point; increase it if the
+machine remains responsive:
+
+```sh
+CARGO_BUILD_JOBS=2 cargo dev-check      # Bash
+$env:CARGO_BUILD_JOBS = "2"; cargo dev-check  # PowerShell
+```
+
+`MCPANEL_FAST=1 ./check.sh` runs format, `cargo check`, and workspace-only
+Clippy. `MCPANEL_FAST=1 ./build.sh` builds a debuggable `target/debug/mcpanel`
+without the release profile's LTO and single codegen unit. The default scripts
+still run the complete CI/release workflow. On Windows, run the equivalent
+Cargo commands directly because the wrapper scripts are Bash scripts.
+
 ```sh
 cargo test --workspace     # 89 backend tests
 cd web && npm test         # 29 frontend tests

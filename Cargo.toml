@@ -28,6 +28,20 @@ playit-runtime = {
     rev = "d20dc37da2cd54e72c8f9c83d69966bb2c9ae0a1"
 }
 
+# Keep the edit/check loop light on machines where full debug information is
+# expensive to produce and link. Line tables preserve useful backtraces while
+# avoiding the larger variable/type debug data. Override with
+# CARGO_PROFILE_DEV_DEBUG=2 when a full debugger session needs it.
+[profile.dev]
+debug = "line-tables-only"
+incremental = true
+codegen-units = 256
+
+[profile.test]
+debug = "line-tables-only"
+incremental = true
+codegen-units = 256
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

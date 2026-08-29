@@ -10,11 +10,25 @@ cd "$(dirname "$0")"
 
 step() { printf '\n\033[1;36m==> %s\033[0m\n' "$1"; }
 
+if [[ ${MCPANEL_FAST:-0} == 1 ]]; then
+  step "Format"
+  cargo fmt --all --check
+
+  step "Rust check"
+  cargo check --workspace
+
+  step "Clippy (workspace only)"
+  cargo clippy --workspace --no-deps -- -D warnings
+
+  printf '\n\033[1;32mFast checks passed.\033[0m\n'
+  exit 0
+fi
+
 step "Format"
 cargo fmt --all --check
 
 step "Clippy"
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --no-deps -- -D warnings
 
 step "Rust tests"
 cargo test --workspace
