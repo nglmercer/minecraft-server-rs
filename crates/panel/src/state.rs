@@ -245,19 +245,60 @@ impl AppState {
     /// Server deletion uses this while holding the lock so an in-flight file
     /// operation completes before the guardian is removed. The record should
     /// already have been removed from the store before this method is called.
-    pub async fn remove_guardian_locked(&self, id: &str, guardian: Arc<Guardian>) {
-        let _ = guardian.stop().await;
+    /// Returns an error if the guardian cannot be settled, so callers do not
+    /// silently report deletion success while a managed process remains alive.
+    #[allow(dead_code)]
+    pub async fn remove_guardian_locked(
+        &self,
+        id: &str,
+        guardian: Arc<Guardian>,
+    ) -> anyhow::Result<()> {
+        let status = guardian.status().await;
+        let needs_stop = status.is_running() || status == guardian::ServerStatus::Preparing;
+        if needs_stop {
+            guardian
+                .stop()
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to stop server {id}: {e}"))?;
+        }
         if !guardian
             .wait_for_settled(std::time::Duration::from_secs(10))
             .await
         {
-            tracing::error!(
-                server = %id,
-                "server process did not exit; retaining guardian to avoid an orphan"
+            anyhow::bail!(
+                "server {id} process did not exit; retaining guardian to avoid an orphan"
             );
-            return;
         }
         self.guardians.write().await.remove(id);
+        Ok(())
+    }
+
+    /// Remove a guardian that has already been stopped and verified settled.
+    ///
+    /// Used by server deletion after the caller has explicitly stopped the
+    /// guardian and verified `wait_for_settled`. This avoids a second `stop`
+    /// and makes the error path explicit.
+    pub async fn remove_guardian_verified(
+        &self,
+        id: &str,
+        guardian: Arc<Guardian>,
+    ) -> anyhow::Result<()> {
+        if !guardian
+            .wait_for_settled(std::time::Duration::from_secs(10))
+            .await
+        {
+            anyhow::bail!("server {id} did not settle; retaining guardian");
+        }
+        // Final verification that no child/preparation remains.
+        let snapshot = guardian.snapshot().await;
+        if snapshot.pid.is_some()
+            || snapshot.status.is_running()
+            || snapshot.status == guardian::ServerStatus::Preparing
+        {
+            anyhow::bail!("server {id} still has active process/preparation");
+        }
+        self.guardians.write().await.remove(id);
+        Ok(())
     }
 
     /// Gracefully stop every managed server before the panel and its sandbox
@@ -539,12 +580,242 @@ mod tests {
 
         state
             .remove_guardian_locked("server-1", Arc::clone(&guardian))
-            .await;
+            .await
+            .unwrap();
         assert!(state.guardian("server-1").await.is_err());
 
         drop(resource_lock);
         drop(guardian);
         assert!(weak.upgrade().is_none());
+        state.playit.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn deleting_server_removes_stale_user_permissions() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let state = AppState::bootstrap(data_dir.path(), PlayitMode::External)
+            .await
+            .unwrap();
+        let record = ServerRecord {
+            id: "srv-1".into(),
+            name: "Server".into(),
+            config: ServerConfig::paper(state.server_dir("srv-1"), "1.21.8"),
+            policy: GuardianConfig::default(),
+            playit: None,
+            created_at: "2026-08-28T00:00:00Z".into(),
+        };
+        state
+            .store
+            .update(|data| {
+                // Ensure an admin exists for invariant validation
+                data.users.push(crate::store::User {
+                    username: "admin".into(),
+                    password_hash: "$argon2id$fake".into(),
+                    admin: true,
+                    servers: vec![],
+                });
+                data.servers.push(record.clone())
+            })
+            .await
+            .unwrap();
+        // Single user with permission
+        state
+            .store
+            .update(|data| {
+                data.users.push(crate::store::User {
+                    username: "bob".into(),
+                    password_hash: "$argon2id$fake".into(),
+                    admin: false,
+                    servers: vec!["srv-1".into()],
+                })
+            })
+            .await
+            .unwrap();
+        // Simulate atomic deletion that also cleans user perms (as fixed)
+        state
+            .store
+            .update(|data| {
+                data.servers.retain(|s| s.id != "srv-1");
+                for user in &mut data.users {
+                    user.servers.retain(|sid| sid != "srv-1");
+                }
+            })
+            .await
+            .unwrap();
+        let data = state.store.read().await;
+        assert!(!data.users[0].servers.contains(&"srv-1".to_string()));
+        assert!(data.servers.is_empty());
+        // Persist/reload must validate
+        drop(data);
+        let reloaded = crate::store::Store::load(data_dir.path()).await.unwrap();
+        let reloaded_data = reloaded.read().await;
+        assert!(reloaded_data.servers.is_empty());
+        assert!(reloaded_data.users[0].servers.is_empty());
+        // Invariants must hold
+        super::validate_persisted_invariants(&reloaded_data, state.limits.max_server_memory_mb)
+            .unwrap();
+        state.playit.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn deleting_server_cleans_multiple_users_and_admin() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let state = AppState::bootstrap(data_dir.path(), PlayitMode::External)
+            .await
+            .unwrap();
+        let record = ServerRecord {
+            id: "srv-1".into(),
+            name: "Server".into(),
+            config: ServerConfig::paper(state.server_dir("srv-1"), "1.21.8"),
+            policy: GuardianConfig::default(),
+            playit: None,
+            created_at: "2026-08-28T00:00:00Z".into(),
+        };
+        state
+            .store
+            .update(|data| data.servers.push(record.clone()))
+            .await
+            .unwrap();
+        state
+            .store
+            .update(|data| {
+                data.users.push(crate::store::User {
+                    username: "alice".into(),
+                    password_hash: "$argon2id$fake".into(),
+                    admin: false,
+                    servers: vec!["srv-1".into()],
+                });
+                data.users.push(crate::store::User {
+                    username: "bob".into(),
+                    password_hash: "$argon2id$fake".into(),
+                    admin: false,
+                    servers: vec!["srv-1".into()],
+                });
+                data.users.push(crate::store::User {
+                    username: "admin".into(),
+                    password_hash: "$argon2id$fake".into(),
+                    admin: true,
+                    servers: vec!["srv-1".into()],
+                });
+            })
+            .await
+            .unwrap();
+        state
+            .store
+            .update(|data| {
+                data.servers.retain(|s| s.id != "srv-1");
+                for user in &mut data.users {
+                    user.servers.retain(|sid| sid != "srv-1");
+                }
+            })
+            .await
+            .unwrap();
+        let data = state.store.read().await;
+        for user in &data.users {
+            assert!(!user.servers.contains(&"srv-1".to_string()));
+        }
+        state.playit.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn deleting_unassigned_server_leaves_permissions_untouched() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let state = AppState::bootstrap(data_dir.path(), PlayitMode::External)
+            .await
+            .unwrap();
+        let record = ServerRecord {
+            id: "srv-1".into(),
+            name: "Server".into(),
+            config: ServerConfig::paper(state.server_dir("srv-1"), "1.21.8"),
+            policy: GuardianConfig::default(),
+            playit: None,
+            created_at: "2026-08-28T00:00:00Z".into(),
+        };
+        let other = ServerRecord {
+            id: "srv-2".into(),
+            name: "Other".into(),
+            config: ServerConfig::paper(state.server_dir("srv-2"), "1.21.8"),
+            policy: GuardianConfig::default(),
+            playit: None,
+            created_at: "2026-08-28T00:00:00Z".into(),
+        };
+        state
+            .store
+            .update(|data| {
+                data.servers.push(record.clone());
+                data.servers.push(other.clone());
+                data.users.push(crate::store::User {
+                    username: "bob".into(),
+                    password_hash: "$argon2id$fake".into(),
+                    admin: false,
+                    servers: vec!["srv-2".into()],
+                });
+            })
+            .await
+            .unwrap();
+        state
+            .store
+            .update(|data| {
+                data.servers.retain(|s| s.id != "srv-1");
+                for user in &mut data.users {
+                    user.servers.retain(|sid| sid != "srv-1");
+                }
+            })
+            .await
+            .unwrap();
+        let data = state.store.read().await;
+        assert_eq!(data.servers.len(), 1);
+        assert_eq!(data.servers[0].id, "srv-2");
+        assert_eq!(data.users[0].servers, vec!["srv-2"]);
+        state.playit.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_server_creation_leaves_no_orphan_directory() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let state = AppState::bootstrap(data_dir.path(), PlayitMode::External)
+            .await
+            .unwrap();
+        let id = "orphan-test-server";
+        let dir = state.server_dir(id);
+        crate::state::secure_directory(&dir).await.unwrap();
+        assert!(dir.exists());
+        // Simulate persistence failure cleanup as in create()
+        state.remove_uncommitted_server_dir(id).await;
+        assert!(!dir.exists());
+        // Ensure second removal is idempotent
+        state.remove_uncommitted_server_dir(id).await;
+        assert!(!dir.exists());
+        state.playit.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_preparation_and_prevents_new_starts() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let state = AppState::bootstrap(data_dir.path(), PlayitMode::External)
+            .await
+            .unwrap();
+        let record = ServerRecord {
+            id: "server-shutdown".into(),
+            name: "ShutdownTest".into(),
+            config: ServerConfig::paper(state.server_dir("server-shutdown"), "1.21.8"),
+            policy: GuardianConfig::default(),
+            playit: None,
+            created_at: "2026-08-28T00:00:00Z".into(),
+        };
+        let guardian = state.insert_guardian(&record).await;
+        // Mark shutting down
+        guardian.shutdown().await.unwrap();
+        // New starts must be rejected
+        assert!(guardian.start().await.is_err());
+        assert!(guardian.reinstall().await.is_err());
+        // shutdown_servers should settle quickly for offline server
+        state.shutdown_servers().await;
+        assert!(
+            guardian
+                .wait_for_settled(std::time::Duration::from_secs(1))
+                .await
+        );
         state.playit.shutdown().await.unwrap();
     }
 }

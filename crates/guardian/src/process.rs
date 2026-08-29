@@ -34,8 +34,26 @@ const REAP_INTERVAL: Duration = Duration::from_millis(200);
 pub const MAX_COMMAND_BYTES: usize = 8 * 1024;
 
 /// Vanilla and every fork log this once the world is loaded and the port is open.
-fn line_means_online(line: &str) -> bool {
-    line.contains("Done (") && line.contains("For help, type")
+/// Core-aware detection: different server families emit different readiness lines.
+pub fn line_means_online(core: &str, line: &str) -> bool {
+    let core = core.to_ascii_lowercase();
+    match core.as_str() {
+        // Proxy families have distinct markers.
+        "velocity" => line.contains("Done ("),
+        "waterfall" | "bungeecord" => {
+            line.contains("Listening on")
+                || line.contains("has been enabled")
+                || line.contains("Waterfall version")
+                || line.contains("BungeeCord version")
+        }
+        // Modded / hybrid families may emit forge-specific completion.
+        "fabric" | "forge" | "mohist" | "arclight" => {
+            (line.contains("Done (") && line.contains("For help, type"))
+                || line.contains("Dedicated server took")
+        }
+        // Vanilla-like: paper, purpur, folia, vanilla and default.
+        _ => line.contains("Done (") && line.contains("For help, type"),
+    }
 }
 
 /// Whether `start` is permitted from `status`.
@@ -662,8 +680,10 @@ impl Guardian {
                     return;
                 };
 
+                // Core-aware readiness detection; read core each iteration in case config changed.
+                let core = guardian.config().await.core.clone();
                 if stream == Stream::Stdout
-                    && line_means_online(&line)
+                    && line_means_online(&core, &line)
                     && guardian.status().await == ServerStatus::Starting
                 {
                     guardian.set_status(ServerStatus::Online).await;
@@ -1078,7 +1098,39 @@ mod tests {
     #[test]
     fn the_done_line_marks_the_server_as_online() {
         assert!(line_means_online(
+            "paper",
             r#"[11:05:24 INFO]: Done (12.612s)! For help, type "help""#
+        ));
+        assert!(line_means_online(
+            "vanilla",
+            r#"[11:05:24 INFO]: Done (12.612s)! For help, type "help""#
+        ));
+        assert!(line_means_online(
+            "purpur",
+            r#"[11:05:24 INFO]: Done (12.612s)! For help, type "help""#
+        ));
+        assert!(line_means_online(
+            "fabric",
+            r#"[11:05:24 INFO]: Done (12.612s)! For help, type "help""#
+        ));
+        // Velocity uses a shorter Done marker without the help text.
+        assert!(line_means_online(
+            "velocity",
+            r#"[11:05:24 INFO]: Done (2.34s)!"#
+        ));
+        // Waterfall / Bungee family
+        assert!(line_means_online(
+            "waterfall",
+            r#"[11:05:24 INFO]: Listening on /0.0.0.0:25577"#
+        ));
+        assert!(line_means_online(
+            "bungeecord",
+            r#"[11:05:24 INFO]: Listening on /0.0.0.0:25577"#
+        ));
+        // Forge modded
+        assert!(line_means_online(
+            "forge",
+            r#"[11:05:24 INFO] [Server thread/INFO]: Dedicated server took 3.123 seconds to load"#
         ));
     }
 
@@ -1112,9 +1164,36 @@ mod tests {
     #[test]
     fn similar_looking_lines_do_not_mark_the_server_online() {
         // A plugin printing its own "Done" must not flip the status early.
-        assert!(!line_means_online("[INFO]: Done (0.1s)! Loading plugins"));
-        assert!(!line_means_online("[INFO]: Preparing spawn area: 84%"));
-        assert!(!line_means_online(""));
+        assert!(!line_means_online(
+            "paper",
+            "[INFO]: Done (0.1s)! Loading plugins"
+        ));
+        assert!(!line_means_online(
+            "paper",
+            "[INFO]: Preparing spawn area: 84%"
+        ));
+        assert!(!line_means_online("paper", ""));
+        assert!(!line_means_online(
+            "velocity",
+            "[INFO]: Preparing spawn area: 84%"
+        ));
+        assert!(!line_means_online(
+            "waterfall",
+            "[INFO]: Done (0.1s)! Loading plugins"
+        ));
+        assert!(!line_means_online(
+            "forge",
+            "[INFO]: Done (0.1s)! Loading plugins"
+        ));
+        // Negative: velocity should not be marked by waterfall pattern and vice versa
+        assert!(!line_means_online(
+            "paper",
+            "[11:05:24 INFO]: Listening on /0.0.0.0:25577"
+        ));
+        assert!(!line_means_online(
+            "velocity",
+            "[11:05:24 INFO]: Listening on /0.0.0.0:25577"
+        ));
     }
 
     #[test]

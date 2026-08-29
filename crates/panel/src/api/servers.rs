@@ -230,11 +230,13 @@ async fn create(
         created_at: now(),
     };
     validate_record(&state, &record)?;
+    // Provisional directory: must be removed unless the store commit succeeds.
     crate::state::secure_directory(&directory)
         .await
         .map_err(ApiError::Internal)?;
 
     let max_memory_mb = state.limits.max_server_memory_mb;
+    // Use a guard-style cleanup: any failure before commit removes the provisional directory.
     let write = state
         .store
         .try_update(|data| -> ApiResult<()> {
@@ -257,7 +259,16 @@ async fn create(
             data.servers.push(record.clone());
             Ok(())
         })
-        .await?;
+        .await;
+
+    let write = match write {
+        Ok(inner) => inner,
+        Err(error) => {
+            // Persistence/I/O failure before commit: remove provisional directory.
+            state.remove_uncommitted_server_dir(&id).await;
+            return Err(ApiError::Internal(error));
+        }
+    };
     if let Err(error) = write {
         state.remove_uncommitted_server_dir(&id).await;
         return Err(error);
@@ -396,38 +407,118 @@ async fn delete(
     AdminIdentity(admin): AdminIdentity,
     Path(id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    // Lock ordering: server_mutation_lock -> guardian resource lock -> store lock
+    // This prevents races with server creation, file operations, and Playit attach.
     let _server_lock = state.server_mutation_lock.lock().await;
-    let record = state
+    // Validate existence before acquiring resource lock.
+    state
         .store
         .server(&id)
         .await
         .ok_or_else(|| ApiError::NotFound(format!("server {id}")))?;
 
-    // A panel-managed tunnel is an external resource. Clean it up before
-    // removing the record so a successful delete cannot strand a public route.
-    // If the Playit service is unavailable, keep the server and binding intact so the
-    // operator can retry rather than losing the association.
-    if let Some(binding) = record.playit.as_ref() {
-        let tunnels = state.playit.account_tunnels().await?;
-        if tunnels.iter().any(|tunnel| tunnel.id == binding.tunnel_id) {
-            state.playit.delete_tunnel(&binding.tunnel_id).await?;
-        }
-    }
-
     let guardian = state.guardian(&id).await?;
     let _resource_lock = guardian.lock_resources().await;
+    // Re-validate after acquiring the resource lock to avoid TOCTOU with concurrent delete.
     let record_after_lock = state
         .store
         .server(&id)
         .await
         .ok_or_else(|| ApiError::NotFound(format!("server {id}")))?;
 
+    // ---- Lifecycle: ensure no managed process/preparation remains before committing deletion ----
+    // Must not commit a successful logical deletion while a JVM or preparation task is still alive.
+    let status = guardian.status().await;
+    let needs_stop = status.is_running() || status == guardian::ServerStatus::Preparing;
+    if needs_stop {
+        guardian
+            .stop()
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to stop server {id}: {e}")))?;
+        if !guardian
+            .wait_for_settled(std::time::Duration::from_secs(10))
+            .await
+        {
+            return Err(ApiError::Internal(anyhow::anyhow!(
+                "server {id} process did not exit after stop; deletion aborted"
+            )));
+        }
+    } else {
+        // Offline/Crashed: ensure no lingering preparation task or orphaned child.
+        if !guardian
+            .wait_for_settled(std::time::Duration::from_secs(10))
+            .await
+        {
+            return Err(ApiError::Internal(anyhow::anyhow!(
+                "server {id} preparation did not settle; deletion aborted"
+            )));
+        }
+        let snapshot = guardian.snapshot().await;
+        if snapshot.pid.is_some() {
+            return Err(ApiError::Internal(anyhow::anyhow!(
+                "server {id} still has live process"
+            )));
+        }
+    }
+    // Final verification that no process or preparation remains.
+    {
+        let snapshot = guardian.snapshot().await;
+        if snapshot.status.is_running()
+            || snapshot.status == guardian::ServerStatus::Preparing
+            || snapshot.pid.is_some()
+        {
+            return Err(ApiError::Internal(anyhow::anyhow!(
+                "server {id} still running after stop"
+            )));
+        }
+        // Also check internal settled state directly.
+        if !guardian
+            .wait_for_settled(std::time::Duration::from_secs(1))
+            .await
+        {
+            return Err(ApiError::Internal(anyhow::anyhow!(
+                "server {id} did not settle"
+            )));
+        }
+    }
+
+    // ---- External resource cleanup before store commit (so failure preserves record) ----
+    // If the Playit service is unavailable, keep the server and binding intact so the
+    // operator can retry rather than losing the association.
+    if let Some(binding) = record_after_lock.playit.as_ref() {
+        let tunnels = state
+            .playit
+            .account_tunnels()
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("playit status failed: {e}")))?;
+        if tunnels.iter().any(|tunnel| tunnel.id == binding.tunnel_id) {
+            state
+                .playit
+                .delete_tunnel(&binding.tunnel_id)
+                .await
+                .map_err(|e| ApiError::Internal(anyhow::anyhow!("playit delete failed: {e}")))?;
+        }
+    }
+
+    // ---- Atomically update persisted state: remove server and clean all user permissions ----
+    // One transaction so persisted invariants remain valid immediately after deletion.
     state
         .store
-        .update(|data| data.servers.retain(|s| s.id != id))
-        .await?;
+        .update(|data| {
+            data.servers.retain(|s| s.id != id);
+            for user in &mut data.users {
+                user.servers.retain(|sid| sid != &id);
+            }
+        })
+        .await
+        .map_err(ApiError::Internal)?;
     tracing::info!(server = %id, by = %admin.username, "server deleted");
-    state.remove_guardian_locked(&id, guardian).await;
+
+    // ---- Remove guardian: already stopped and verified, just drop from map ----
+    state
+        .remove_guardian_verified(&id, guardian)
+        .await
+        .map_err(ApiError::Internal)?;
 
     // Server files are deliberately left on disk: deleting a world by clicking
     // a button in a web UI is not a mistake anyone should be able to make.

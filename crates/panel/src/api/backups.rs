@@ -84,15 +84,89 @@ async fn create(
         return Err(ApiError::Conflict("backup storage quota exceeded".into()));
     }
 
-    // Taking a backup while chunks are being written produces a torn world, so
-    // flush first and let the server keep running.
-    if server.status().await.is_running() {
-        let _ = server.command("save-all flush").await;
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    }
-
-    let backup =
-        guardian::backup::create_with_limit(&directory, &backup_dir, note, available).await?;
+    // Consistent online backup protocol:
+    // save-off -> save-all flush -> wait for ack -> create backup -> save-on
+    // save-on must run even if backup creation fails (RAII/finally).
+    let backup = if server.status().await.is_running() {
+        let core = server.config().await.core.to_ascii_lowercase();
+        let is_proxy = core == "velocity" || core == "waterfall" || core == "bungeecord";
+        if is_proxy {
+            guardian::backup::create_with_limit(&directory, &backup_dir, note, available).await?
+        } else {
+            let mut events = server.subscribe();
+            // save-off: disable automatic saving so the world does not mutate during archive.
+            if let Err(e) = server.command("save-off").await {
+                return Err(ApiError::Internal(anyhow::anyhow!(
+                    "failed to disable world saving: {e}"
+                )));
+            }
+            // save-all flush: force a synchronous save.
+            if let Err(e) = server.command("save-all flush").await {
+                let _ = server.command("save-on").await;
+                return Err(ApiError::Internal(anyhow::anyhow!(
+                    "failed to flush world save: {e}"
+                )));
+            }
+            // Wait for positive console acknowledgement with bounded timeout.
+            // Do not rely on arbitrary sleep for correctness.
+            let ack = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    match events.recv().await {
+                        Ok(guardian::ServerEvent::Console(line)) => {
+                            let text = &line.line;
+                            if text.contains("Saved the game")
+                                || text.contains("Saved the world")
+                                || text.contains("All dimensions are saved")
+                            {
+                                return Ok::<(), anyhow::Error>(());
+                            }
+                        }
+                        Ok(_) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            return Err(anyhow::anyhow!(
+                                "event channel closed while waiting for save ack"
+                            ));
+                        }
+                    }
+                }
+            })
+            .await;
+            let ack_result = match ack {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err(anyhow::anyhow!(
+                    "timeout waiting for save-all flush acknowledgement"
+                )),
+            };
+            if let Err(e) = ack_result {
+                let _ = server.command("save-on").await;
+                return Err(ApiError::Internal(e));
+            }
+            // Create backup while saving is disabled.
+            let backup_result =
+                guardian::backup::create_with_limit(&directory, &backup_dir, note, available).await;
+            // save-on must run even if backup creation fails.
+            let save_on_result = server.command("save-on").await;
+            // Prioritize backup error over save-on error, but log save-on failure.
+            match backup_result {
+                Ok(backup) => {
+                    if let Err(e) = save_on_result {
+                        tracing::warn!(server = %id, error = %e, "failed to re-enable world saving after backup");
+                    }
+                    backup
+                }
+                Err(e) => {
+                    if let Err(save_err) = save_on_result {
+                        tracing::warn!(server = %id, error = %save_err, "failed to re-enable world saving after failed backup");
+                    }
+                    return Err(e.into());
+                }
+            }
+        }
+    } else {
+        guardian::backup::create_with_limit(&directory, &backup_dir, note, available).await?
+    };
     let usage_fs = crate::filesystem::open(backup_dir.clone()).await?;
     let usage = tokio::task::spawn_blocking(move || usage_fs.directory_size("."))
         .await
