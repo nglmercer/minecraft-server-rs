@@ -1,14 +1,11 @@
 //! Local backup provider – wraps the existing guardian backup logic.
 
 use std::path::PathBuf;
-use std::pin::Pin;
-
-use tokio::io::AsyncRead;
 
 use crate::backups::provider::{
     BackupArtifact, BackupProvider, BackupProviderKind, BackupStream, ProviderHealth, RemoteBackup,
 };
-use crate::error::{ApiError, ApiResult};
+use crate::error::ApiError;
 
 pub struct LocalBackupProvider {
     data_dir: PathBuf,
@@ -57,7 +54,6 @@ impl BackupProvider for LocalBackupProvider {
             size: artifact.size_bytes,
             note: artifact.note.clone(),
         };
-        let meta_path = backup_dir.join(format!("{}.json", artifact.id));
         let meta_bytes =
             serde_json::to_vec_pretty(&backup).map_err(|e| ApiError::Internal(e.into()))?;
         let backup_dir_clone = backup_dir.clone();

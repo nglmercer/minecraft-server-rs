@@ -80,6 +80,7 @@ impl SecretStorage {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn read_secret(&self, credential_ref: &str) -> Result<Vec<u8>> {
         let path = self.path_for(credential_ref)?;
         let dir = secrets_dir(&self.data_dir);
@@ -106,6 +107,7 @@ impl SecretStorage {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn delete_secret(&self, credential_ref: &str) -> Result<()> {
         let path = self.path_for(credential_ref)?;
         let dir = secrets_dir(&self.data_dir);

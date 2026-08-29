@@ -11,6 +11,7 @@ pub use crate::store::{BackupProviderKind, StoredBackup};
 /// Temporary artifact produced before upload. The provider does not need a
 /// filesystem path – cloud providers stream the file.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct BackupArtifact {
     pub id: String,
     pub server_id: String,

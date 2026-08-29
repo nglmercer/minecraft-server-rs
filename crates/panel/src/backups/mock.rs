@@ -1,4 +1,5 @@
 //! Mock provider for tests – simulates cloud behavior without real credentials.
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,6 +12,7 @@ use crate::backups::provider::{
 use crate::error::ApiError;
 
 #[derive(Default)]
+#[allow(dead_code)]
 pub struct MockBackupProvider {
     // server_id -> (backup_id -> RemoteBackup)
     store: Arc<RwLock<HashMap<String, HashMap<String, RemoteBackup>>>>,

@@ -9,15 +9,7 @@
 //! through the web UI or the REST API under `/api`.
 
 #![forbid(unsafe_code)]
-#![allow(
-    dead_code,
-    unused_imports,
-    unused_variables,
-    clippy::all,
-    clippy::pedantic,
-    clippy::nursery,
-    clippy::restriction
-)]
+#![allow(clippy::all, clippy::pedantic, clippy::nursery, clippy::restriction)]
 
 mod api;
 mod auth;

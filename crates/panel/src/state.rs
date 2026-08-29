@@ -11,11 +11,10 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, OwnedMutexGuard, RwLock, Semaphore};
 
 use crate::auth::{LoginLimiter, Sessions};
-use crate::backups::retention::plan_retention;
 use crate::error::ApiError;
 use crate::limits::ResourceLimits;
 use crate::metrics::Metrics;
-use crate::store::{BackupStorageSettings, PanelData, ServerRecord, Store, StoredBackup};
+use crate::store::{PanelData, ServerRecord, Store, StoredBackup};
 use crate::tickets::Tickets;
 
 /// The Playit backend used by the panel.
@@ -145,6 +144,8 @@ impl AppState {
         secure_directory(&data_dir.join("jdks")).await?;
 
         let store = Arc::new(Store::load(&data_dir).await?);
+        // Remove orphan backup metadata before validation so deletion+restart doesn't fail
+        cleanup_orphan_backups(&store).await?;
         normalize_server_records(&store, &data_dir, limits.max_server_memory_mb).await?;
 
         let playit = match playit_mode {
@@ -193,8 +194,12 @@ impl AppState {
 
         // Migrate existing local backups into new StoredBackup metadata if needed
         migrate_backup_metadata(&store, &data_dir).await?;
+        // Re-clean orphans after migration (imported only for existing servers, but be safe)
+        cleanup_orphan_backups(&store).await?;
         // Cleanup stale staging files from previous crashes
         cleanup_staging(&data_dir).await;
+        // Run age-based retention at startup (best-effort, local deletes only)
+        let _ = run_startup_retention(&store, &data_dir).await;
 
         Ok(Arc::new(AppState {
             store,
@@ -409,6 +414,8 @@ async fn migrate_backup_metadata(store: &Store, data_dir: &Path) -> Result<()> {
                 size_bytes: b.size,
                 checksum_sha256: None,
                 note: b.note.clone(),
+                google_drive_folder_id: None,
+                google_drive_credential_ref: None,
             });
         }
     }
@@ -423,6 +430,96 @@ async fn migrate_backup_metadata(store: &Store, data_dir: &Path) -> Result<()> {
         })
         .await?;
     Ok(())
+}
+
+async fn cleanup_orphan_backups(store: &Store) -> Result<()> {
+    store
+        .update(|data| {
+            let ids: std::collections::HashSet<String> =
+                data.servers.iter().map(|s| s.id.clone()).collect();
+            let before = data.backups.len();
+            data.backups.retain(|b| ids.contains(&b.server_id));
+            if data.backups.len() != before {
+                tracing::warn!(
+                    removed = before - data.backups.len(),
+                    "removed orphan backup metadata for deleted servers"
+                );
+            }
+        })
+        .await?;
+    Ok(())
+}
+
+async fn run_startup_retention(store: &Store, data_dir: &Path) -> Result<()> {
+    let backups = store.read().await.backups.clone();
+    if backups.is_empty() {
+        return Ok(());
+    }
+    let servers = store.read().await.servers.clone();
+    let backup_storage = store.read().await.backup_storage.clone();
+    for record in servers {
+        let retention = if let Some(policy) = &record.backup_policy {
+            policy.retention.clone()
+        } else {
+            backup_storage.retention.clone()
+        };
+        let server_backups: Vec<StoredBackup> = backups
+            .iter()
+            .filter(|b| b.server_id == record.id)
+            .cloned()
+            .collect();
+        if server_backups.is_empty() {
+            continue;
+        }
+        if let Some(max_days) = retention.max_age_days {
+            let to_delete: Vec<StoredBackup> = server_backups
+                .iter()
+                .filter(|b| is_older_than_exact(b, max_days))
+                .cloned()
+                .collect();
+            if to_delete.is_empty() {
+                continue;
+            }
+            tracing::info!(
+                server = %record.id,
+                to_delete = ?to_delete.iter().map(|b| &b.id).collect::<Vec<_>>(),
+                "startup retention removing expired backups"
+            );
+            for b in to_delete {
+                // Only auto-delete Local backups at startup without network; cloud backups
+                // will be cleaned on next backup creation or via periodic task.
+                if b.provider != crate::store::BackupProviderKind::Local {
+                    continue;
+                }
+                let backup_dir = data_dir.join("backups").join(&b.server_id);
+                // Use guardian directly to avoid needing AppState
+                if let Err(e) = guardian::backup::delete(&backup_dir, &b.id).await {
+                    tracing::warn!(server=%record.id, backup=%b.id, error=%e, "startup retention delete failed");
+                    continue;
+                }
+                if let Err(e) = store
+                    .update(|data| {
+                        data.backups.retain(|x| x.id != b.id);
+                    })
+                    .await
+                {
+                    tracing::warn!(server=%record.id, backup=%b.id, error=%e, "startup retention metadata cleanup failed");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_older_than_exact(backup: &StoredBackup, max_days: u32) -> bool {
+    let Ok(created) = time::OffsetDateTime::parse(
+        &backup.created_at,
+        &time::format_description::well_known::Rfc3339,
+    ) else {
+        return false;
+    };
+    let now = time::OffsetDateTime::now_utc();
+    (now - created).whole_seconds() > max_days as i64 * 86_400
 }
 
 async fn cleanup_staging(data_dir: &Path) {

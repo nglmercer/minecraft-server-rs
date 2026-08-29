@@ -124,7 +124,7 @@ export interface Backup {
   id: string;
   created_at: string;
   size: number;
-  size_bytes?: number;
+  size_bytes: number;
   note: string;
   provider?: "local" | "google_drive";
   remote_id?: string;
@@ -140,6 +140,17 @@ export interface BackupRetention {
 export interface BackupStorageSettings {
   provider: "local" | "google_drive";
   retention: BackupRetention;
+  google_drive?: {
+    folder_id: string;
+    credentials_present: boolean;
+    configured: boolean;
+  } | null;
+}
+
+export interface ServerBackupSettings {
+  inherit_global: boolean;
+  provider?: "local" | "google_drive" | null;
+  retention?: BackupRetention | null;
   google_drive?: {
     folder_id: string;
     credentials_present: boolean;

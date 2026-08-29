@@ -164,6 +164,12 @@ pub struct StoredBackup {
     pub checksum_sha256: Option<String>,
     #[serde(default)]
     pub note: String,
+    /// Immutable Google Drive location at creation time, for resolving the
+    /// correct provider even after global/server settings change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub google_drive_folder_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub google_drive_credential_ref: Option<String>,
 }
 
 /// A server as the panel stores it: identity plus the two guardian configs.

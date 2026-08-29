@@ -1,6 +1,7 @@
 //! Backup storage settings API.
 
 use axum::extract::{Path, State};
+#[allow(unused_imports)]
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -128,6 +129,8 @@ async fn patch_global(
 #[derive(Deserialize)]
 pub struct SecretUpload {
     pub content: String,
+    #[serde(default)]
+    pub credential_ref: Option<String>,
 }
 
 async fn upload_secret(
@@ -136,21 +139,29 @@ async fn upload_secret(
     Json(body): Json<SecretUpload>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let storage = SecretStorage::new(state.data_dir.clone());
-    // Expect base64 or raw JSON; for now accept raw JSON string
+    let cref = body.credential_ref.as_deref().unwrap_or("google-drive");
+    if cref.trim().is_empty()
+        || cref.len() > 64
+        || !cref
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(ApiError::BadRequest("invalid credential_ref".into()));
+    }
     storage
-        .write_secret("google-drive", body.content.as_bytes())
+        .write_secret(cref, body.content.as_bytes())
         .await
         .map_err(|e| ApiError::Internal(e.into()))?;
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Ok(Json(
+        serde_json::json!({ "ok": true, "credential_ref": cref }),
+    ))
 }
 
 async fn test_connection(
     State(state): State<Arc<AppState>>,
     AdminIdentity(_): AdminIdentity,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let data = state.store.read().await;
-    let settings = data.backup_storage.clone();
-    drop(data);
+    drop(state.store.read().await);
     // Create provider based on global settings (use first server or dummy)
     let dummy_record = crate::store::ServerRecord {
         id: "test".into(),

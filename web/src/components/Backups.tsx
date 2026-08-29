@@ -38,13 +38,18 @@ export function Backups({ serverId, status }: { serverId: string; status: Status
 
   const running = status !== "offline" && status !== "crashed";
 
+  function backupSize(b: Backup): number {
+    // Backend returns StoredBackup with size_bytes; older data may have size
+    return (b as unknown as { size_bytes?: number }).size_bytes ?? b.size ?? 0;
+  }
+
   async function create(event: Event) {
     event.preventDefault();
     setBusy("create");
     try {
       const backup = await api.createBackup(serverId, note.trim());
       setNote("");
-      toast.success(t("backups.created", { id: backup.id, size: formatBytes(backup.size) }));
+      toast.success(t("backups.created", { id: backup.id, size: formatBytes(backupSize(backup)) }));
       await load();
     } catch (e) {
       fail(e);
@@ -145,11 +150,11 @@ export function Backups({ serverId, status }: { serverId: string; status: Status
                   <p class="font-mono text-sm">{backup.id}</p>
                   {backup.note && <p class="mt-0.5 text-xs text-fg-muted">{backup.note}</p>}
                   <p class="mt-0.5 font-mono text-xs text-fg-muted sm:hidden">
-                    {formatBytes(backup.size)} · {new Date(backup.created_at).toLocaleString()}
+                    {formatBytes(backupSize(backup))} · {new Date(backup.created_at).toLocaleString()}
                   </p>
                 </td>
                 <td class="hidden px-4 py-3 text-right font-mono text-xs text-fg-muted sm:table-cell">
-                  {formatBytes(backup.size)}
+                  {formatBytes(backupSize(backup))}
                 </td>
                 <td class="hidden whitespace-nowrap px-4 py-3 text-right text-xs text-fg-muted md:table-cell">
                   {new Date(backup.created_at).toLocaleString()}

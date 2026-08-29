@@ -268,13 +268,13 @@ export const api = {
   testBackupSettings: () =>
     request<{ ok: boolean; message: string }>("/settings/backups/test", { method: "POST" }),
 
-  uploadBackupSecret: (content: string) =>
-    request<{ ok: boolean }>("/settings/backups/secret", { method: "POST", body: json({ content }) }),
+  uploadBackupSecret: (content: string, credential_ref?: string) =>
+    request<{ ok: boolean }>("/settings/backups/secret", { method: "POST", body: json({ content, credential_ref }) }),
 
-  serverBackupSettings: (id: string) => request<BackupStorageSettings>(`/servers/${id}/backup-settings`),
+  serverBackupSettings: (id: string) => request<import("./types").ServerBackupSettings>(`/servers/${id}/backup-settings`),
 
   updateServerBackupSettings: (id: string, body: Record<string, unknown>) =>
-    request<BackupStorageSettings>(`/servers/${id}/backup-settings`, { method: "PATCH", body: json(body) }),
+    request<import("./types").ServerBackupSettings>(`/servers/${id}/backup-settings`, { method: "PATCH", body: json(body) }),
 
   restoreBackup: (id: string, backup: string) =>
     request<{ ok: boolean }>(`/servers/${id}/backups/${backup}/restore`, { method: "POST" }),

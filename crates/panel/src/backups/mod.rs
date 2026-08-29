@@ -14,7 +14,9 @@ pub mod secret;
 pub use crate::store::{
     BackupProviderKind, BackupRetentionPolicy, GoogleDriveConfig, StoredBackup,
 };
+#[allow(unused_imports)]
 pub use provider::{BackupArtifact, BackupProvider, BackupStream, ProviderHealth, RemoteBackup};
+#[allow(unused_imports)]
 pub use secret::SecretStorage;
 
 use std::sync::Arc;
@@ -58,6 +60,64 @@ pub async fn provider_for(
     }
 }
 
+/// Reconstruct the provider that owns `stored`, using immutable backup metadata
+/// rather than the server's current settings. This ensures a backup remains
+/// accessible after provider/folder switches.
+pub async fn provider_for_stored(
+    state: &AppState,
+    stored: &StoredBackup,
+) -> anyhow::Result<Arc<dyn BackupProvider>> {
+    match stored.provider {
+        BackupProviderKind::Local => Ok(Arc::new(local::LocalBackupProvider::new(
+            state.data_dir.clone(),
+        ))),
+        BackupProviderKind::GoogleDrive => {
+            // Prefer the immutable location captured at backup time
+            let config = if let (Some(folder_id), Some(cred)) = (
+                stored.google_drive_folder_id.clone(),
+                stored.google_drive_credential_ref.clone(),
+            ) {
+                GoogleDriveConfig {
+                    folder_id,
+                    credential_ref: cred,
+                }
+            } else {
+                // Fallback to current server/global settings for legacy backups
+                let server = state.store.server(&stored.server_id).await;
+                if let Some(rec) = server {
+                    let (_, gd) = if let Some(policy) = rec.backup_policy.as_ref() {
+                        let global = state.store.read().await.backup_storage.clone();
+                        (
+                            policy.provider.clone(),
+                            policy.google_drive.clone().or(global.google_drive.clone()),
+                        )
+                    } else {
+                        let global = state.store.read().await.backup_storage.clone();
+                        (global.provider.clone(), global.google_drive.clone())
+                    };
+                    gd.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "google drive provider not configured for legacy backup {}",
+                            stored.id
+                        )
+                    })?
+                } else {
+                    // Server no longer exists but backup metadata remains (should have been cleaned,
+                    // but for direct remote_id deletion we still need a config)
+                    let global = state.store.read().await.backup_storage.clone();
+                    global.google_drive.ok_or_else(|| {
+                        anyhow::anyhow!("google drive not configured for backup {}", stored.id)
+                    })?
+                }
+            };
+            Ok(Arc::new(google_drive::GoogleDriveBackupProvider::new(
+                state.data_dir.clone(),
+                config,
+            )))
+        }
+    }
+}
+
 /// Effective retention for a server (global vs override).
 pub async fn retention_for(state: &AppState, server: &ServerRecord) -> BackupRetentionPolicy {
     if let Some(policy) = server.backup_policy.as_ref() {
@@ -70,7 +130,7 @@ pub async fn retention_for(state: &AppState, server: &ServerRecord) -> BackupRet
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{BackupProviderKind, StoredBackup};
+    use crate::store::BackupProviderKind;
 
     #[tokio::test]
     async fn local_provider_contract() {

@@ -10,7 +10,6 @@ use futures_util::StreamExt;
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio_util::io::ReaderStream;
-use uuid::Uuid;
 
 use crate::auth::Identity;
 use crate::backups::retention::plan_retention;
@@ -68,7 +67,7 @@ async fn create(
             "backup note is too long or contains control characters".into(),
         ));
     }
-    let (server, _resource_lock) = state.server_resource_lock(&id).await?;
+    let (server, resource_lock) = state.server_resource_lock(&id).await?;
     let backup_lock = state.backup_lock(&id).await;
     let _backup_guard = backup_lock.lock().await;
     let directory = authorized(&state, &identity, &id).await?;
@@ -172,56 +171,87 @@ async fn create(
         return Err(e);
     }
 
-    // Create staging archive while save-off (if applicable)
+    // Create staging archive while save-off (if applicable) – ensure save-on always runs
     let created_at = time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap();
-    // Use a temporary backup dir as staging: create backup there, then use its file as artifact
-    let tmp_id = Uuid::new_v4().simple().to_string();
-    let tmp_backup_dir = staging_dir.clone();
-    let dir_for_create = directory.clone();
-    let note_for_create = note.clone();
-    let backup_meta = guardian::backup::create_with_limit(
-        &dir_for_create,
-        &tmp_backup_dir,
-        note_for_create,
-        available,
-    )
-    .await
-    .map_err(|e| ApiError::Internal(e.into()))?;
-    // The file is at tmp_backup_dir/<backup_meta.id>.tar.gz
-    let src_path = tmp_backup_dir.join(format!("{}.tar.gz", backup_meta.id));
-    let staging_path = staging_dir.join(format!("{}.tar.gz", backup_meta.id));
-    // Move to staging_path with correct id (already there, but ensure)
-    if src_path != staging_path {
-        let _ = tokio::fs::rename(&src_path, &staging_path).await;
-    }
-    let _ = tokio::fs::remove_file(tmp_backup_dir.join(format!("{}.json", backup_meta.id))).await;
-    let size_bytes = backup_meta.size;
-    // Compute checksum
-    let checksum = {
-        use sha2::{Digest, Sha256};
-        use tokio::io::AsyncReadExt;
-        let mut file = tokio::fs::File::open(&staging_path)
-            .await
-            .map_err(|e| ApiError::Internal(e.into()))?;
-        let mut hasher = Sha256::new();
-        let mut buf = vec![0u8; 8192];
-        loop {
-            let n = file
-                .read(&mut buf)
+    // Capture save-on guard behavior: archive+checksum must always restore saving
+    let archive_result: ApiResult<(guardian::Backup, std::path::PathBuf, Option<String>)> = async {
+        // Use a temporary backup dir as staging
+        let tmp_backup_dir = staging_dir.clone();
+        let dir_for_create = directory.clone();
+        let note_for_create = note.clone();
+        let backup_meta = guardian::backup::create_with_limit(
+            &dir_for_create,
+            &tmp_backup_dir,
+            note_for_create,
+            available,
+        )
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
+        let src_path = tmp_backup_dir.join(format!("{}.tar.gz", backup_meta.id));
+        let staging_path = staging_dir.join(format!("{}.tar.gz", backup_meta.id));
+        if src_path != staging_path {
+            let _ = tokio::fs::rename(&src_path, &staging_path).await;
+        }
+        let _ =
+            tokio::fs::remove_file(tmp_backup_dir.join(format!("{}.json", backup_meta.id))).await;
+        // Compute checksum
+        let checksum = {
+            use sha2::{Digest, Sha256};
+            use tokio::io::AsyncReadExt;
+            let mut file = tokio::fs::File::open(&staging_path)
                 .await
                 .map_err(|e| ApiError::Internal(e.into()))?;
-            if n == 0 {
-                break;
+            let mut hasher = Sha256::new();
+            let mut buf = vec![0u8; 8192];
+            loop {
+                let n = file
+                    .read(&mut buf)
+                    .await
+                    .map_err(|e| ApiError::Internal(e.into()))?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
             }
-            hasher.update(&buf[..n]);
-        }
-        Some(format!("{:x}", hasher.finalize()))
-    };
-    if needs_save_on {
-        let _ = server.command("save-on").await;
+            Some(format!("{:x}", hasher.finalize()))
+        };
+        Ok((backup_meta, staging_path, checksum))
     }
+    .await;
+
+    // Always restore saving before releasing resource lock or returning
+    let save_on_result: Result<(), anyhow::Error> = if needs_save_on {
+        match server.command("save-on").await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                tracing::warn!(server = %id, error = %e, "save-on failed after backup; world saving may remain disabled");
+                Err(anyhow::anyhow!("failed to re-enable saving: {e}"))
+            }
+        }
+    } else {
+        Ok(())
+    };
+    // Release resource lock early: archive is complete and saving restored,
+    // cloud upload/retention should not block file ops for minutes/hours.
+    drop(resource_lock);
+    // Propagate archive failure after saving is restored
+    let (backup_meta, staging_path, checksum) = match archive_result {
+        Ok(v) => v,
+        Err(e) => {
+            if let Err(se) = save_on_result {
+                tracing::error!(server = %id, error = %se, "backup archive failed and save-on also failed");
+            }
+            return Err(e);
+        }
+    };
+    if let Err(e) = save_on_result {
+        // Archive succeeded but save-on failed: treat as hard error to alert operator
+        let _ = tokio::fs::remove_file(&staging_path).await;
+        return Err(ApiError::Internal(e));
+    }
+    let size_bytes = backup_meta.size;
 
     let artifact = crate::backups::provider::BackupArtifact {
         id: backup_meta.id.clone(),
@@ -241,6 +271,19 @@ async fn create(
     } else {
         state.store.read().await.backup_storage.provider.clone()
     };
+    // Capture immutable Google Drive location for the backup
+    let (gd_folder, gd_cred) = if effective_kind == crate::store::BackupProviderKind::GoogleDrive {
+        let global_gd = state.store.read().await.backup_storage.google_drive.clone();
+        let gd = if let Some(policy) = &record.backup_policy {
+            policy.google_drive.clone().or(global_gd)
+        } else {
+            global_gd
+        };
+        gd.map(|c| (Some(c.folder_id), Some(c.credential_ref)))
+            .unwrap_or((None, None))
+    } else {
+        (None, None)
+    };
 
     let remote = provider.upload(&id, &artifact).await.map_err(|e| {
         let _ = std::fs::remove_file(&staging_path);
@@ -256,14 +299,22 @@ async fn create(
         size_bytes: remote.size_bytes,
         checksum_sha256: checksum.clone(),
         note: note.clone(),
+        google_drive_folder_id: gd_folder.clone(),
+        google_drive_credential_ref: gd_cred.clone(),
     };
-    state
+    if let Err(e) = state
         .store
         .update(|data| {
             data.backups.push(stored.clone());
         })
         .await
-        .map_err(|e| ApiError::Internal(e.into()))?;
+    {
+        // Compensation: upload succeeded but metadata commit failed – delete remote object
+        tracing::warn!(server=%id, backup=%stored.id, error=%e, "metadata commit failed after upload; cleaning up remote backup");
+        let _ = provider.delete(&id, &stored.id).await;
+        // Try remote_id direct if provider_for_stored differs
+        return Err(ApiError::Internal(e.into()));
+    }
 
     // Retention
     let retention = crate::backups::retention_for(&state, &record).await;
@@ -280,19 +331,30 @@ async fn create(
         if del_id == stored.id {
             continue;
         }
-        let del_provider = crate::backups::provider_for(&state, &record)
-            .await
-            .unwrap_or_else(|_| provider.clone());
+        // Use immutable provider for each backup to be deleted
+        let del_stored = all_for_server.iter().find(|b| b.id == del_id).cloned();
+        let del_provider = if let Some(ref sb) = del_stored {
+            crate::backups::provider_for_stored(&state, sb)
+                .await
+                .unwrap_or_else(|_| provider.clone())
+        } else {
+            crate::backups::provider_for(&state, &record)
+                .await
+                .unwrap_or_else(|_| provider.clone())
+        };
         if let Err(e) = del_provider.delete(&id, &del_id).await {
             tracing::warn!(server = %id, backup = %del_id, error = %e, "retention delete failed");
             continue;
         }
-        let _ = state
+        if let Err(e) = state
             .store
             .update(|data| {
                 data.backups.retain(|b| b.id != del_id);
             })
-            .await;
+            .await
+        {
+            tracing::warn!(server=%id, backup=%del_id, error=%e, "retention metadata remove failed after physical delete; orphan metadata may remain");
+        }
     }
 
     if effective_kind != crate::store::BackupProviderKind::Local {
@@ -322,11 +384,6 @@ async fn restore(
             "stop the server before restoring a backup".into(),
         ));
     }
-    let record = state
-        .store
-        .server(&id)
-        .await
-        .ok_or_else(|| ApiError::NotFound("server".into()))?;
     let stored = {
         let data = state.store.read().await;
         data.backups
@@ -337,7 +394,7 @@ async fn restore(
     let Some(stored) = stored else {
         return Err(ApiError::NotFound("backup".into()));
     };
-    let provider = crate::backups::provider_for(&state, &record)
+    let provider = crate::backups::provider_for_stored(&state, &stored)
         .await
         .map_err(|e| ApiError::Internal(e.into()))?;
     let tmp_path = state
@@ -416,15 +473,30 @@ async fn delete(
     let backup_lock = state.backup_lock(&id).await;
     let _backup_guard = backup_lock.lock().await;
     authorized(&state, &identity, &id).await?;
-    let record = state
-        .store
-        .server(&id)
-        .await
-        .ok_or_else(|| ApiError::NotFound("server".into()))?;
-    let provider = crate::backups::provider_for(&state, &record)
-        .await
-        .map_err(|e| ApiError::Internal(e.into()))?;
-    provider.delete(&id, &backup).await?;
+    let stored = {
+        let data = state.store.read().await;
+        data.backups
+            .iter()
+            .find(|b| b.server_id == id && b.id == backup)
+            .cloned()
+    };
+    if let Some(stored) = stored {
+        let provider = crate::backups::provider_for_stored(&state, &stored)
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
+        provider.delete(&id, &backup).await?;
+    } else {
+        // Fallback to current provider for legacy filesystem-only backups
+        let record = state
+            .store
+            .server(&id)
+            .await
+            .ok_or_else(|| ApiError::NotFound("server".into()))?;
+        let provider = crate::backups::provider_for(&state, &record)
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
+        provider.delete(&id, &backup).await?;
+    }
     state
         .store
         .update(|data| {
@@ -509,16 +581,10 @@ async fn download(
             .find(|b| b.server_id == id && b.id == backup)
             .cloned()
     };
-    let record = state
-        .store
-        .server(&id)
-        .await
-        .ok_or_else(|| ApiError::NotFound("server".into()))?;
-    let provider = crate::backups::provider_for(&state, &record)
-        .await
-        .map_err(|e| ApiError::Internal(e.into()))?;
-
-    if let Some(_stored) = stored {
+    if let Some(ref stored_val) = stored {
+        let provider = crate::backups::provider_for_stored(&state, stored_val)
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
         if let Ok(stream) = provider.download(&id, &backup).await {
             let stream = ReaderStream::new(stream).map(move |chunk| {
                 let _keep_slot = &download_slot;
@@ -537,6 +603,7 @@ async fn download(
             )
                 .into_response());
         }
+        // If stored backup's provider fails, fall through to local fallback
     }
 
     let fs = crate::filesystem::open(state.backup_dir(&id))

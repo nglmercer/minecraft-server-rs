@@ -483,26 +483,9 @@ async fn delete(
         }
     }
 
-    // ---- External resource cleanup before store commit (so failure preserves record) ----
-    // If the Playit service is unavailable, keep the server and binding intact so the
-    // operator can retry rather than losing the association.
-    if let Some(binding) = record_after_lock.playit.as_ref() {
-        let tunnels = state
-            .playit
-            .account_tunnels()
-            .await
-            .map_err(|e| ApiError::Internal(anyhow::anyhow!("playit status failed: {e}")))?;
-        if tunnels.iter().any(|tunnel| tunnel.id == binding.tunnel_id) {
-            state
-                .playit
-                .delete_tunnel(&binding.tunnel_id)
-                .await
-                .map_err(|e| ApiError::Internal(anyhow::anyhow!("playit delete failed: {e}")))?;
-        }
-    }
-
-    // ---- Atomically update persisted state: remove server and clean all user permissions ----
-    // One transaction so persisted invariants remain valid immediately after deletion.
+    // ---- Atomically update persisted state: remove server and clean all user permissions + backups ----
+    // External Playit cleanup happens after local commit so a failed tunnel delete
+    // does not leave an orphan server record binding to a now-deleted tunnel.
     state
         .store
         .update(|data| {
@@ -510,10 +493,30 @@ async fn delete(
             for user in &mut data.users {
                 user.servers.retain(|sid| sid != &id);
             }
+            let before = data.backups.len();
+            data.backups.retain(|b| b.server_id != id);
+            if before != data.backups.len() {
+                tracing::info!(server = %id, removed = before - data.backups.len(), "removed backup metadata for deleted server");
+            }
         })
         .await
         .map_err(ApiError::Internal)?;
     tracing::info!(server = %id, by = %admin.username, "server deleted");
+
+    // ---- External Playit cleanup after local commit (best-effort) ----
+    if let Some(binding) = record_after_lock.playit.as_ref() {
+        match state.playit.account_tunnels().await {
+            Ok(tunnels) if tunnels.iter().any(|t| t.id == binding.tunnel_id) => {
+                if let Err(e) = state.playit.delete_tunnel(&binding.tunnel_id).await {
+                    tracing::warn!(server = %id, tunnel = %binding.tunnel_id, error = %e, "playit tunnel deletion failed after server removal; orphan tunnel may need manual cleanup");
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(server = %id, error = %e, "playit status failed after server removal; tunnel may remain");
+            }
+        }
+    }
 
     // ---- Remove guardian: already stopped and verified, just drop from map ----
     state

@@ -62,24 +62,23 @@ pub fn plan_retention(
 }
 
 fn is_older_than(backup: &StoredBackup, max_days: u32) -> bool {
-    // Parse created_at as RFC3339; if parsing fails, be conservative and keep it.
-    let created = time::OffsetDateTime::parse(
+    let Ok(created) = time::OffsetDateTime::parse(
         &backup.created_at,
         &time::format_description::well_known::Rfc3339,
-    )
-    .or_else(|_| {
-        time::OffsetDateTime::parse(
-            &backup.created_at,
-            &time::format_description::well_known::Rfc3339,
-        )
-    });
-    let Ok(created) = created else {
+    ) else {
         return false;
     };
     let now = time::OffsetDateTime::now_utc();
-    let age = now - created;
-    let age_days = (age.whole_seconds() / 86_400) as i64;
-    age_days > max_days as i64
+    // Use exact duration but truncated to seconds to avoid flakiness from
+    // sub-second execution delta between backup creation and retention check.
+    // Backup exactly max_days old is kept; > max_days deletes.
+    let age_seconds = (now - created).whole_seconds();
+    age_seconds > max_days as i64 * 86_400
+}
+
+#[allow(dead_code)]
+pub fn is_older_than_exact(backup: &StoredBackup, max_days: u32) -> bool {
+    is_older_than(backup, max_days)
 }
 
 #[cfg(test)]
@@ -100,6 +99,8 @@ mod tests {
             size_bytes: 100,
             checksum_sha256: None,
             note: String::new(),
+            google_drive_folder_id: None,
+            google_drive_credential_ref: None,
         }
     }
 
