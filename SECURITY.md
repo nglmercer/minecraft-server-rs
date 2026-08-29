@@ -25,10 +25,14 @@ timeline, and credit reporters who want attribution.
   directory (`0700` on Unix), `panel.json`, Playit credentials, backups, and
   service environment from other users.
 * Install Linux `bubblewrap` (`bwrap`) when using separate untrusted server
-  operators. On macOS, use the available sandbox profile. Windows currently
-  has application-level containment but no per-server kernel sandbox in this
-  binary; use OS accounts, containers, or job-object infrastructure for hard
-  isolation.
+  operators. On macOS, use the available `sandbox-exec` helper. If the
+  configured platform helper is unavailable, the panel refuses to start a
+  Minecraft JVM unless the operator explicitly passes
+  `--allow-unsandboxed-servers` or sets
+  `MCPANEL_ALLOW_UNSANDBOXED_SERVERS=true`. Windows currently has no
+  per-server kernel sandbox in this binary, so the same acknowledgement is
+  required there; use OS accounts, containers, or job-object infrastructure
+  for hard isolation.
 * Set upload, extraction, server-disk, backup-disk, download, and heap limits
   appropriate to the host. Use cgroups, filesystem quotas, or containers for
   hard CPU, RAM, process-count, descriptor, and native-memory limits.
@@ -50,10 +54,12 @@ browser flows use short-lived scoped tickets rather than long-lived session
 tokens in URLs.
 
 When `bwrap` or macOS sandboxing is active, Minecraft receives only its server
-directory and required runtime files. Without a kernel sandbox, the application
-still rejects filesystem traversal and strips panel secrets from the child
-environment, but Java code runs with the panel service account's remaining OS
-authority. This is a known limitation, not a tenant-isolation guarantee.
+directory and required runtime files. Filesystem/API containment is not the
+same as OS tenant isolation: plugins and mods execute arbitrary JVM code. If
+unsandboxed execution is explicitly acknowledged, Java code runs with the
+panel service account's remaining OS authority. Network access is also not
+strongly isolated by this binary. CPU, process, memory, and native-resource
+limits require OS-level controls such as cgroups, containers, or job objects.
 
 ## Secrets handling
 
@@ -62,3 +68,19 @@ cookie. Playit secrets are kept in the data directory and are never returned
 by the panel API. Never include `Authorization` headers, cookies, tickets,
 passwords, or Playit secrets in bug reports or logs. Rotate credentials after
 any suspected exposure.
+
+## Maintainer repository settings
+
+Application code cannot enforce GitHub branch rules. Protect `main` in the
+repository settings or rulesets with these requirements:
+
+* require a pull request before merging;
+* require the backend checks `Rust (ubuntu-latest)` and `Rust
+  (windows-latest)`, plus the `Frontend` check;
+* require the branch to be up to date before merging;
+* require conversation resolution;
+* disallow force pushes; and
+* disallow branch deletion.
+
+Keep the required checks aligned with the jobs defined in the repository's CI
+workflow; do not add a source-code substitute for these GitHub controls.

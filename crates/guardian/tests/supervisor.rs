@@ -9,6 +9,7 @@
 //! `server_args`, which is the same path a real server's arguments take.
 
 use guardian::events::Stream;
+use guardian::sandbox::SandboxPolicy;
 use guardian::{
     Guardian, GuardianConfig, ServerConfig, ServerEnvironment, ServerEvent, ServerStatus,
 };
@@ -35,7 +36,7 @@ fn guardian_with(
     // The fake launcher insists on a real jar, just as the real one does.
     std::fs::write(dir.join("server.jar"), b"not really a jar").unwrap();
 
-    let guardian = Guardian::new(config, policy, dir);
+    let guardian = Guardian::new_with_sandbox_policy(config, policy, dir, SandboxPolicy::new(true));
     let environment = ServerEnvironment {
         java: fake_java(),
         java_major: 21,
@@ -331,7 +332,12 @@ async fn a_relative_jar_path_still_launches() {
     config.eula_accepted = true;
     config.server_args = vec!["done".into(), "serve".into()];
 
-    let guardian = Guardian::new(config, GuardianConfig::default(), tmp.path());
+    let guardian = Guardian::new_with_sandbox_policy(
+        config,
+        GuardianConfig::default(),
+        tmp.path(),
+        SandboxPolicy::new(true),
+    );
     guardian
         .set_environment(ServerEnvironment {
             java: fake_java(),
@@ -380,7 +386,12 @@ async fn a_launch_that_cannot_spawn_returns_to_offline() {
     let mut config = ServerConfig::paper(tmp.path(), "1.21.8");
     config.eula_accepted = true;
 
-    let guardian = Guardian::new(config, GuardianConfig::default(), tmp.path());
+    let guardian = Guardian::new_with_sandbox_policy(
+        config,
+        GuardianConfig::default(),
+        tmp.path(),
+        SandboxPolicy::new(true),
+    );
     guardian
         .set_environment(ServerEnvironment {
             java: PathBuf::from("/nonexistent/bin/java"),
@@ -420,7 +431,8 @@ async fn provisioning_that_overruns_its_limit_gives_up() {
         prepare_timeout_secs: 0,
         ..GuardianConfig::default()
     };
-    let guardian = Guardian::new(config, policy, tmp.path());
+    let guardian =
+        Guardian::new_with_sandbox_policy(config, policy, tmp.path(), SandboxPolicy::new(true));
     let mut events = guardian.subscribe();
 
     guardian.start().await.unwrap();
@@ -444,7 +456,12 @@ async fn an_abandoned_provision_can_be_stopped_and_started_again() {
     // to completion before the stop below.
     config.java_major = 999;
 
-    let guardian = Guardian::new(config, GuardianConfig::default(), tmp.path());
+    let guardian = Guardian::new_with_sandbox_policy(
+        config,
+        GuardianConfig::default(),
+        tmp.path(),
+        SandboxPolicy::new(true),
+    );
 
     guardian.start().await.unwrap();
     assert_eq!(guardian.status().await, ServerStatus::Preparing);
@@ -479,7 +496,12 @@ async fn killing_during_provisioning_also_recovers() {
     config.eula_accepted = true;
     config.java_major = 999;
 
-    let guardian = Guardian::new(config, GuardianConfig::default(), tmp.path());
+    let guardian = Guardian::new_with_sandbox_policy(
+        config,
+        GuardianConfig::default(),
+        tmp.path(),
+        SandboxPolicy::new(true),
+    );
 
     guardian.start().await.unwrap();
     assert_eq!(guardian.status().await, ServerStatus::Preparing);

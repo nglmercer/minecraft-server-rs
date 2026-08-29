@@ -163,7 +163,7 @@ async fn write(
     AxumPath(id): AxumPath<String>,
     Json(body): Json<WriteRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let root = root_for(&state, &identity, &id).await?;
+    let _ = root_for(&state, &identity, &id).await?;
     let path = relative(&body.path)?;
     if path.as_os_str().is_empty() {
         return Err(ApiError::BadRequest("a file path is required".into()));
@@ -175,7 +175,8 @@ async fn write(
         )));
     }
 
-    let _resource_lock = state.resource_lock.lock().await;
+    let (_guardian, _resource_lock) = state.server_resource_lock(&id).await?;
+    let root = root_for(&state, &identity, &id).await?;
     let fs = open(root).await?;
     let quota_fs = fs.try_clone().map_err(io_error)?;
     let quota_path = path.clone();
@@ -218,13 +219,15 @@ async fn delete(
     AxumPath(id): AxumPath<String>,
     Query(query): Query<PathQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let root = root_for(&state, &identity, &id).await?;
+    let _ = root_for(&state, &identity, &id).await?;
     let path = relative(&query.path)?;
     if path.as_os_str().is_empty() {
         return Err(ApiError::BadRequest(
             "refusing to delete the server root".into(),
         ));
     }
+    let (_guardian, _resource_lock) = state.server_resource_lock(&id).await?;
+    let root = root_for(&state, &identity, &id).await?;
     let fs = open(root).await?;
     tokio::task::spawn_blocking(move || fs.remove(&path))
         .await
@@ -245,8 +248,10 @@ async fn mkdir(
     AxumPath(id): AxumPath<String>,
     Json(body): Json<MkdirRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let root = root_for(&state, &identity, &id).await?;
+    let _ = root_for(&state, &identity, &id).await?;
     let path = relative(&body.path)?;
+    let (_guardian, _resource_lock) = state.server_resource_lock(&id).await?;
+    let root = root_for(&state, &identity, &id).await?;
     let fs = open(root).await?;
     tokio::task::spawn_blocking(move || fs.create_dir_all(&path))
         .await
@@ -268,7 +273,8 @@ async fn sizes(
     AxumPath(id): AxumPath<String>,
     Query(query): Query<PathQuery>,
 ) -> ApiResult<Json<Vec<DirectorySize>>> {
-    let _resource_lock = state.resource_lock.lock().await;
+    let _ = root_for(&state, &identity, &id).await?;
+    let (_guardian, _resource_lock) = state.server_resource_lock(&id).await?;
     let root = root_for(&state, &identity, &id).await?;
     let path = relative(&query.path)?;
     let fs = open(root).await?;
@@ -401,9 +407,10 @@ async fn upload(
     Query(query): Query<PathQuery>,
     mut multipart: Multipart,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let root = root_for(&state, &identity, &id).await?;
+    let _ = root_for(&state, &identity, &id).await?;
     let directory = relative(&query.path)?;
-    let _resource_lock = state.resource_lock.lock().await;
+    let (_guardian, _resource_lock) = state.server_resource_lock(&id).await?;
+    let root = root_for(&state, &identity, &id).await?;
     let fs = open(root).await?;
     let quota_fs = fs.try_clone().map_err(io_error)?;
     let existing = tokio::task::spawn_blocking(move || quota_fs.directory_size("."))
@@ -730,7 +737,7 @@ async fn extract(
     AxumPath(id): AxumPath<String>,
     Json(body): Json<ExtractRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let root = root_for(&state, &identity, &id).await?;
+    let _ = root_for(&state, &identity, &id).await?;
     let archive = relative(&body.path)?;
     if archive.as_os_str().is_empty() {
         return Err(ApiError::BadRequest("an archive path is required".into()));
@@ -742,7 +749,8 @@ async fn extract(
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf(),
     };
-    let _resource_lock = state.resource_lock.lock().await;
+    let (_guardian, _resource_lock) = state.server_resource_lock(&id).await?;
+    let root = root_for(&state, &identity, &id).await?;
     let fs = open(root).await?;
     let archive_metadata = fs.metadata(&archive).map_err(io_error)?;
     if !archive_metadata.is_file {
@@ -785,7 +793,7 @@ async fn rename(
     AxumPath(id): AxumPath<String>,
     Json(body): Json<RenameRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let root = root_for(&state, &identity, &id).await?;
+    let _ = root_for(&state, &identity, &id).await?;
     let from = relative(&body.from)?;
     let to = relative(&body.to)?;
     if from.as_os_str().is_empty() || to.as_os_str().is_empty() {
@@ -793,6 +801,8 @@ async fn rename(
             "refusing to rename the server root".into(),
         ));
     }
+    let (_guardian, _resource_lock) = state.server_resource_lock(&id).await?;
+    let root = root_for(&state, &identity, &id).await?;
     let fs = open(root).await?;
     if let Some(parent) = to.parent() {
         let parent = parent.to_path_buf();

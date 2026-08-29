@@ -24,6 +24,11 @@ A backup is a gzipped tarball of the worlds, configuration, plugins and player d
 
 Taking a backup of a running server flushes chunks to disk first and leaves it online. Restoring requires the server to be stopped: unpacking a world under a live JVM corrupts it.
 
+Restore writes each replacement through a temporary file and publishes it
+atomically after its archive and server-disk quota checks pass. A failure is
+not a whole-archive transaction: files earlier in the archive may already have
+been restored, while the offending replacement itself is not published.
+
 Relevant endpoints: `GET`/`POST /servers/{id}/backups`, `DELETE /servers/{id}/backups/{backup}`, `POST .../restore`, ticketed `.../download`. See [API](api.md).
 
 ## Plugins and mods

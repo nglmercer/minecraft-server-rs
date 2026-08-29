@@ -17,16 +17,16 @@ The Rust test suite runs on Windows too — the stand-in for the JVM is a small 
 `build.sh` is a shell script. On Windows run the two steps it wraps:
 
 ```sh
-cd web && npm install && npm run build
-cargo build --release
+cd web && npm ci && npm run build
+cargo build --release --locked
 ```
 
 Two Linux builds are published: `linux-x86_64` (glibc) and `linux-x86_64-static` (static) for Alpine or older distros. See [Releasing](releasing.md) and [Getting Started](getting-started.md).
 
 ## Sandbox per OS
 
-- **Linux:** `bwrap` (bubblewrap) gives the strongest isolation — separate PID/filesystem view, read-only JDK, server-local home/tmp. Install `bubblewrap` when hosting untrusted operators.
-- **macOS:** `sandbox-exec` provides a comparable filesystem boundary.
-- **Windows:** application-level quotas and containment, but no per-server Windows job object or restricted OS identity in this binary yet. Use a separate Windows service account, container, or job-object infrastructure per trust domain when hard isolation is required. See [Security](security.md).
+- **Linux:** `bwrap` (bubblewrap) gives the strongest isolation — separate PID/filesystem view, read-only JDK, server-local home/tmp. Install `bubblewrap` when hosting untrusted operators. If it is unavailable, startup requires `--allow-unsandboxed-servers` or `MCPANEL_ALLOW_UNSANDBOXED_SERVERS=true`.
+- **macOS:** `sandbox-exec` provides a comparable filesystem boundary. If it is unavailable, startup requires the same explicit unsandboxed acknowledgement.
+- **Windows:** this binary has no per-server kernel sandbox or restricted OS identity, so startup requires the same explicit acknowledgement. Use a separate Windows service account, container, or job-object infrastructure per trust domain when hard isolation is required. Network access is not strongly isolated by this binary. See [Security](security.md).
 
 CPU, process-count, file-descriptor, and native-memory limits are not a substitute for cgroups/job objects on those platforms.

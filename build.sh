@@ -8,18 +8,19 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 echo "==> building frontend"
-(cd web && npm install --silent && npm run build)
+(cd web && npm ci --silent && npm run build)
 
 if [[ ${MCPANEL_FAST:-0} == 1 ]]; then
   echo "==> building panel (debug profile)"
-  cargo build -p panel
+  cargo build --locked -p panel
   binary="target/debug/mcpanel"
 else
   echo "==> building panel (release profile)"
-  cargo build --release -p panel
+  cargo build --release --locked -p panel
   binary="target/release/mcpanel"
 fi
 
 echo
 echo "Built ${binary} ($(du -h "${binary}" | cut -f1))"
-echo "Run it with: ${binary} --data-dir ./data --bind 0.0.0.0:8080"
+echo "Run it with: ${binary} --data-dir ./data --bind 127.0.0.1:8080"
+echo "For remote access, use an HTTPS reverse proxy in front of the loopback listener."

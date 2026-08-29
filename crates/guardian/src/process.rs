@@ -13,6 +13,7 @@ use crate::error::{Error, Result};
 use crate::events::{ConsoleLine, ServerEvent, ServerStatus, Stream};
 use crate::fs::ScopedFs;
 use crate::install::Installation;
+use crate::sandbox::SandboxPolicy;
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -92,7 +93,9 @@ pub struct Guardian {
     config: RwLock<ServerConfig>,
     policy: RwLock<GuardianConfig>,
     data_dir: PathBuf,
+    sandbox_policy: SandboxPolicy,
     state: Mutex<RunState>,
+    resource_lock: Arc<Mutex<()>>,
     events: broadcast::Sender<ServerEvent>,
     console: Mutex<VecDeque<ConsoleLine>>,
     environment: RwLock<Option<ServerEnvironment>>,
@@ -102,26 +105,50 @@ pub struct Guardian {
 
 impl Guardian {
     /// Build a guardian for `config`. Nothing is provisioned or spawned yet.
+    ///
+    /// The default policy refuses to launch when the platform sandbox helper
+    /// is unavailable. Use [`Guardian::new_with_sandbox_policy`] only when the
+    /// deployment has explicitly acknowledged unsandboxed execution.
     pub fn new(
         config: ServerConfig,
         policy: GuardianConfig,
         data_dir: impl Into<PathBuf>,
+    ) -> Arc<Self> {
+        Self::new_with_sandbox_policy(config, policy, data_dir, SandboxPolicy::default())
+    }
+
+    /// Build a guardian with an explicit policy for missing OS sandbox helpers.
+    pub fn new_with_sandbox_policy(
+        config: ServerConfig,
+        policy: GuardianConfig,
+        data_dir: impl Into<PathBuf>,
+        sandbox_policy: SandboxPolicy,
     ) -> Arc<Self> {
         let (events, _) = broadcast::channel(1024);
         Arc::new(Guardian {
             config: RwLock::new(config),
             policy: RwLock::new(policy),
             data_dir: data_dir.into(),
+            sandbox_policy,
             state: Mutex::new(RunState {
                 status: Some(ServerStatus::Offline),
                 ..RunState::default()
             }),
+            resource_lock: Arc::new(Mutex::new(())),
             events,
             console: Mutex::new(VecDeque::new()),
             environment: RwLock::new(None),
             seq: AtomicU64::new(0),
             crashes: AtomicU32::new(0),
         })
+    }
+
+    /// Lock filesystem and quota operations for this server.
+    ///
+    /// The lock belongs to the guardian, so it is released with the server's
+    /// lifecycle rather than retained in an installation-wide registry.
+    pub async fn lock_resources(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.resource_lock).lock_owned().await
     }
 
     /// Subscribe to the live event stream. Late subscribers miss earlier events;
@@ -265,6 +292,7 @@ impl Guardian {
             *self.environment.write().await = None;
             let this = Arc::clone(self);
             let task = tokio::spawn(async move {
+                let _resource_lock = this.lock_resources().await;
                 let result = this.provision(Provision::Force).await;
                 let changed = {
                     let mut state = this.state.lock().await;
@@ -393,6 +421,7 @@ impl Guardian {
         mut cancel: watch::Receiver<bool>,
         preparation_id: u64,
     ) {
+        let _resource_lock = self.lock_resources().await;
         let environment = match self.environment().await {
             Some(environment) => Ok(environment),
             None => {
@@ -495,8 +524,16 @@ impl Guardian {
         launch_args.push(env.jar.clone().into_os_string());
         launch_args.extend(config.server_args.iter().cloned().map(OsString::from));
 
-        let mut command =
-            crate::sandbox::command(&env.java, &env.directory, &env.jar, &launch_args);
+        let (mut command, sandbox_mode) = crate::sandbox::command(
+            &env.java,
+            &env.directory,
+            &env.jar,
+            &launch_args,
+            self.sandbox_policy,
+        )?;
+        if sandbox_mode == crate::sandbox::SandboxMode::Unsandboxed {
+            tracing::warn!("Minecraft server is running without OS tenant isolation");
+        }
         command
             .env_clear()
             .current_dir(&env.directory)
@@ -1011,5 +1048,77 @@ mod tests {
         assert!(validate_command("").is_err());
         assert!(validate_command("say\nstop").is_err());
         assert!(validate_command(&"x".repeat(MAX_COMMAND_BYTES + 1)).is_err());
+    }
+
+    #[tokio::test]
+    async fn resource_locks_serialize_one_server_but_not_another() {
+        let first = Guardian::new(
+            ServerConfig::paper("/tmp/mcpanel-lock-a", "1.21.8"),
+            GuardianConfig::default(),
+            "/tmp/mcpanel-lock-a",
+        );
+        let second = Guardian::new(
+            ServerConfig::paper("/tmp/mcpanel-lock-b", "1.21.8"),
+            GuardianConfig::default(),
+            "/tmp/mcpanel-lock-b",
+        );
+        let first_guard = first.lock_resources().await;
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), first.lock_resources())
+                .await
+                .is_err(),
+            "a second mutation for one server must wait for the first"
+        );
+        let other_guard = tokio::time::timeout(Duration::from_millis(50), second.lock_resources())
+            .await
+            .expect("a different server must not wait for the first server");
+
+        drop(other_guard);
+        drop(first_guard);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), first.lock_resources())
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn resource_lock_serializes_quota_check_and_commit() {
+        let guardian = Guardian::new(
+            ServerConfig::paper("/tmp/mcpanel-quota-lock", "1.21.8"),
+            GuardianConfig::default(),
+            "/tmp/mcpanel-quota-lock",
+        );
+        let usage = Arc::new(std::sync::atomic::AtomicU64::new(4));
+        let ready = Arc::new(tokio::sync::Barrier::new(2));
+        let mut tasks = Vec::new();
+
+        for _ in 0..2 {
+            let guardian = Arc::clone(&guardian);
+            let usage = Arc::clone(&usage);
+            let ready = Arc::clone(&ready);
+            tasks.push(tokio::spawn(async move {
+                ready.wait().await;
+                let _resource_lock = guardian.lock_resources().await;
+                let current = usage.load(Ordering::SeqCst);
+                let next = current.checked_add(2).unwrap();
+                if next <= 6 {
+                    tokio::task::yield_now().await;
+                    usage.store(next, Ordering::SeqCst);
+                    true
+                } else {
+                    false
+                }
+            }));
+        }
+
+        let accepted = futures_util::future::join_all(tasks)
+            .await
+            .into_iter()
+            .filter(|result| result.as_ref().is_ok_and(|accepted| *accepted))
+            .count();
+        assert_eq!(accepted, 1);
+        assert_eq!(usage.load(Ordering::SeqCst), 6);
     }
 }

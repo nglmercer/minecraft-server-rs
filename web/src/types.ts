@@ -193,7 +193,8 @@ export interface SystemStats {
 export interface JavaInstall {
   major: number;
   version: string;
-  path: string;
+  /** Present for administrators; omitted for regular server operators. */
+  path?: string;
   vendor: string | null;
   jdk: boolean;
 }

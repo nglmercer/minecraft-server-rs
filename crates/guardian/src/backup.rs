@@ -305,6 +305,22 @@ pub async fn restore_with_limits(
     server_dir: &Path,
     limits: ArchiveLimits,
 ) -> Result<()> {
+    restore_with_limits_and_quota(backup_dir, id, server_dir, limits, u64::MAX).await
+}
+
+/// Extract a backup using explicit archive and server-disk limits.
+///
+/// The quota is evaluated against the resulting server tree. Replacing an
+/// existing regular file subtracts its current size before the restored bytes
+/// are added, so a smaller replacement can free space while a larger one
+/// consumes it.
+pub async fn restore_with_limits_and_quota(
+    backup_dir: &Path,
+    id: &str,
+    server_dir: &Path,
+    limits: ArchiveLimits,
+    max_server_disk_bytes: u64,
+) -> Result<()> {
     validate_id(id)?;
     let id = id.to_owned();
 
@@ -331,6 +347,9 @@ pub async fn restore_with_limits(
             Err(error) => return Err(Error::io(archive_root.join(&archive_name), error)),
         };
         let target_fs = ScopedFs::open(&target).map_err(|e| Error::io(&target, e))?;
+        let mut server_usage = target_fs
+            .directory_size(".")
+            .map_err(|e| Error::io(&target, e))?;
         let mut tar = tar::Archive::new(GzDecoder::new(file));
         let mut entries = 0_usize;
         let mut total_bytes = 0_u64;
@@ -379,6 +398,12 @@ pub async fn restore_with_limits(
                     .create_dir_all(parent)
                     .map_err(|e| Error::io(parent, e))?;
             }
+            let replaced_size = target_fs
+                .metadata(&relative)
+                .ok()
+                .filter(|metadata| metadata.is_file)
+                .map(|metadata| metadata.len)
+                .unwrap_or(0);
             let temporary: OsString =
                 format!(".mcpanel-restore-{}", Uuid::new_v4().simple()).into();
             let temporary_path = relative
@@ -388,20 +413,47 @@ pub async fn restore_with_limits(
             let mut output = target_fs
                 .create_new_file(&temporary_path)
                 .map_err(|e| Error::io(&temporary_path, e))?;
-            let copied = copy_limited(
-                &mut entry,
-                &mut output,
-                total_bytes,
-                limits.max_total_bytes,
-                limits.max_file_bytes,
-            )?;
-            output.sync_all().map_err(Error::PlainIo)?;
+            let copied = (|| -> Result<u64> {
+                let copied = copy_limited(
+                    &mut entry,
+                    &mut output,
+                    total_bytes,
+                    limits.max_total_bytes,
+                    limits.max_file_bytes,
+                    RestoreQuota {
+                        current_usage: server_usage,
+                        replaced_size,
+                        max_server_disk_bytes,
+                    },
+                )?;
+                output.sync_all().map_err(Error::PlainIo)?;
+                Ok(copied)
+            })();
             drop(output);
+            let copied = match copied {
+                Ok(copied) => copied,
+                Err(error) => {
+                    let _ = target_fs.remove(&temporary_path);
+                    return Err(error);
+                }
+            };
+            let next_total = total_bytes
+                .checked_add(copied)
+                .ok_or_else(|| Error::ArchiveLimit("expanded size overflow".into()))?;
+            let next_usage = server_usage
+                .checked_sub(replaced_size)
+                .and_then(|usage| usage.checked_add(copied))
+                .ok_or(Error::ServerDiskQuotaExceeded)?;
+            if next_usage > max_server_disk_bytes {
+                let _ = target_fs.remove(&temporary_path);
+                return Err(Error::ServerDiskQuotaExceeded);
+            }
             if let Err(error) = target_fs.rename(&temporary_path, &relative) {
                 let _ = target_fs.remove(&temporary_path);
                 return Err(Error::io(&relative, error));
             }
-            total_bytes = total_bytes.saturating_add(copied);
+            total_bytes = next_total;
+            server_usage = next_usage;
         }
         Ok(())
     })
@@ -502,6 +554,7 @@ fn copy_limited<R: Read, W: Write>(
     already: u64,
     max_total: u64,
     max_file: u64,
+    quota: RestoreQuota,
 ) -> Result<u64> {
     let mut buffer = [0_u8; 64 * 1024];
     let mut file_bytes = 0_u64;
@@ -522,10 +575,25 @@ fn copy_limited<R: Read, W: Write>(
         if next_total > max_total {
             return Err(Error::ArchiveLimit("expanded archive is too large".into()));
         }
+        let resulting_usage = quota
+            .current_usage
+            .checked_sub(quota.replaced_size)
+            .and_then(|usage| usage.checked_add(next_file))
+            .ok_or(Error::ServerDiskQuotaExceeded)?;
+        if resulting_usage > quota.max_server_disk_bytes {
+            return Err(Error::ServerDiskQuotaExceeded);
+        }
         writer.write_all(&buffer[..read]).map_err(Error::PlainIo)?;
         file_bytes = next_file;
     }
     Ok(file_bytes)
+}
+
+#[derive(Clone, Copy)]
+struct RestoreQuota {
+    current_usage: u64,
+    replaced_size: u64,
+    max_server_disk_bytes: u64,
 }
 
 #[cfg(test)]
@@ -823,5 +891,133 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(error, Error::ArchiveLimit(_)));
+    }
+
+    #[tokio::test]
+    async fn restore_respects_the_server_quota_below_at_and_above_the_limit() {
+        let limits = ArchiveLimits::default();
+
+        let below = tempfile::tempdir().unwrap();
+        let below_backups = below.path().join("backups");
+        let below_server = below.path().join("server");
+        make_archive(&below_backups, "below", |builder| {
+            append_file(builder, "new.txt", b"1234");
+        });
+        restore_with_limits_and_quota(&below_backups, "below", &below_server, limits, 5)
+            .await
+            .unwrap();
+        assert_eq!(
+            ScopedFs::open(&below_server)
+                .unwrap()
+                .directory_size(".")
+                .unwrap(),
+            4
+        );
+
+        let exact = tempfile::tempdir().unwrap();
+        let exact_backups = exact.path().join("backups");
+        let exact_server = exact.path().join("server");
+        make_archive(&exact_backups, "exact", |builder| {
+            append_file(builder, "new.txt", b"12345");
+        });
+        restore_with_limits_and_quota(&exact_backups, "exact", &exact_server, limits, 5)
+            .await
+            .unwrap();
+        assert_eq!(
+            ScopedFs::open(&exact_server)
+                .unwrap()
+                .directory_size(".")
+                .unwrap(),
+            5
+        );
+
+        let exceed = tempfile::tempdir().unwrap();
+        let exceed_backups = exceed.path().join("backups");
+        let exceed_server = exceed.path().join("server");
+        make_archive(&exceed_backups, "exceed", |builder| {
+            append_file(builder, "new.txt", b"123456");
+        });
+        let error =
+            restore_with_limits_and_quota(&exceed_backups, "exceed", &exceed_server, limits, 5)
+                .await
+                .unwrap_err();
+        assert!(matches!(error, Error::ServerDiskQuotaExceeded));
+        assert!(!exceed_server.join("new.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn restore_quota_subtracts_replaced_bytes_and_adds_larger_replacements() {
+        let limits = ArchiveLimits::default();
+
+        let smaller = tempfile::tempdir().unwrap();
+        let smaller_backups = smaller.path().join("backups");
+        let smaller_server = smaller.path().join("server");
+        write(&smaller_server.join("keep.txt"), "1");
+        write(&smaller_server.join("replace.txt"), "12345678");
+        make_archive(&smaller_backups, "smaller", |builder| {
+            append_file(builder, "replace.txt", b"12");
+        });
+        restore_with_limits_and_quota(&smaller_backups, "smaller", &smaller_server, limits, 3)
+            .await
+            .unwrap();
+        assert_eq!(
+            ScopedFs::open(&smaller_server)
+                .unwrap()
+                .directory_size(".")
+                .unwrap(),
+            3
+        );
+
+        let larger = tempfile::tempdir().unwrap();
+        let larger_backups = larger.path().join("backups");
+        let larger_server = larger.path().join("server");
+        write(&larger_server.join("replace.txt"), "12");
+        make_archive(&larger_backups, "larger", |builder| {
+            append_file(builder, "replace.txt", b"12345");
+        });
+        restore_with_limits_and_quota(&larger_backups, "larger", &larger_server, limits, 5)
+            .await
+            .unwrap();
+        assert_eq!(
+            ScopedFs::open(&larger_server)
+                .unwrap()
+                .directory_size(".")
+                .unwrap(),
+            5
+        );
+    }
+
+    #[tokio::test]
+    async fn a_quota_failed_restore_removes_its_temporary_file_and_keeps_the_old_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backups = tmp.path().join("backups");
+        let server = tmp.path().join("server");
+        write(&server.join("replace.txt"), "old");
+        make_archive(&backups, "failed", |builder| {
+            append_file(builder, "replace.txt", b"this is too large");
+        });
+
+        let error =
+            restore_with_limits_and_quota(&backups, "failed", &server, ArchiveLimits::default(), 3)
+                .await
+                .unwrap_err();
+        assert!(matches!(error, Error::ServerDiskQuotaExceeded));
+        assert_eq!(
+            std::fs::read_to_string(server.join("replace.txt")).unwrap(),
+            "old"
+        );
+        assert_eq!(
+            std::fs::read_dir(&server)
+                .unwrap()
+                .filter_map(std::result::Result::ok)
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".mcpanel-restore-")
+                })
+                .count(),
+            0
+        );
     }
 }

@@ -26,7 +26,7 @@ The first run prints a generated `admin` password. It is shown once — save it.
 
 - Default bind is loopback (`127.0.0.1:8080`). For remote access keep it on loopback behind an HTTPS reverse proxy; see [Security — Secure remote deployment](security.md#secure-remote-deployment).
 - Direct non-loopback plaintext HTTP is refused unless `--allow-insecure-http` is supplied explicitly for a trusted, isolated network.
-- On Linux install `bubblewrap` (`bwrap`) for the strongest sandbox; see [Security](security.md) and [Platforms](platforms.md).
+- On Linux install `bubblewrap` (`bwrap`) for the strongest sandbox; macOS uses `sandbox-exec` when available. If the helper is unavailable, Minecraft startup is refused unless `--allow-unsandboxed-servers` is supplied (or `MCPANEL_ALLOW_UNSANDBOXED_SERVERS=true` is set). See [Security](security.md) and [Platforms](platforms.md).
 
 ## Data directory
 

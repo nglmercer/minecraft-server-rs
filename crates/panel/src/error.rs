@@ -65,8 +65,10 @@ impl IntoResponse for ApiError {
             | ApiError::Guardian(guardian::Error::InvalidBackupId(_))
             | ApiError::Guardian(guardian::Error::UnsafeArchiveEntry(_))
             | ApiError::Guardian(guardian::Error::ArchiveLimit(_)) => StatusCode::BAD_REQUEST,
+            ApiError::Guardian(guardian::Error::ServerDiskQuotaExceeded) => StatusCode::CONFLICT,
             ApiError::Guardian(guardian::Error::StartCancelled)
-            | ApiError::Guardian(guardian::Error::ConsoleUnavailable) => StatusCode::CONFLICT,
+            | ApiError::Guardian(guardian::Error::ConsoleUnavailable)
+            | ApiError::Guardian(guardian::Error::SandboxUnavailable) => StatusCode::CONFLICT,
             ApiError::Guardian(_) | ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
@@ -143,5 +145,11 @@ mod tests {
     fn expected_errors_keep_their_client_safe_message() {
         let response = ApiError::BadRequest("path is invalid".into()).into_response();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn sandbox_policy_errors_are_conflicts_without_internal_paths() {
+        let response = ApiError::Guardian(guardian::Error::SandboxUnavailable).into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
     }
 }

@@ -47,7 +47,9 @@ impl From<&Identity> for UserView {
 }
 
 fn client_key(peer: Option<&Extension<ConnectInfo<SocketAddr>>>) -> String {
-    peer.map(|Extension(ConnectInfo(address))| address.to_string())
+    // ConnectInfo is the address observed by the listener. Forwarded headers
+    // are intentionally not consulted because no trusted-proxy policy exists.
+    peer.map(|Extension(ConnectInfo(address))| address.ip().to_string())
         .unwrap_or_else(|| "unknown".into())
 }
 
@@ -252,4 +254,43 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/me", get(me))
         .route("/logout", post(logout))
         .route("/password", post(change_password))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::LoginLimiter;
+
+    fn peer(address: SocketAddr) -> Extension<ConnectInfo<SocketAddr>> {
+        Extension(ConnectInfo(address))
+    }
+
+    #[test]
+    fn limiter_keys_use_only_the_peer_ip() {
+        let first = client_key(Some(&peer("203.0.113.10:50101".parse().unwrap())));
+        let second = client_key(Some(&peer("203.0.113.10:50102".parse().unwrap())));
+        let other = client_key(Some(&peer("203.0.113.11:50101".parse().unwrap())));
+
+        assert_eq!(first, "203.0.113.10");
+        assert_eq!(first, second);
+        assert_ne!(first, other);
+    }
+
+    #[test]
+    fn failed_attempts_on_different_ports_share_the_same_ip_cooldown() {
+        let limiter = LoginLimiter::default();
+        let first = client_key(Some(&peer("203.0.113.10:50101".parse().unwrap())));
+        let second = client_key(Some(&peer("203.0.113.10:50102".parse().unwrap())));
+        let third = client_key(Some(&peer("203.0.113.10:50103".parse().unwrap())));
+
+        // Use different usernames so the assertion specifically exercises the
+        // IP bucket rather than the username bucket.
+        limiter.failure(&first, "alice");
+        limiter.failure(&second, "bob");
+
+        assert!(
+            limiter.retry_after(&third, "unrelated-user").is_some(),
+            "failures from one IP must accumulate across source ports"
+        );
+    }
 }

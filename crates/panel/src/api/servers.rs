@@ -304,6 +304,8 @@ async fn update(
     if body.jvm_args.is_some() && !identity.admin {
         return Err(ApiError::Forbidden);
     }
+    let guardian = state.guardian(&id).await?;
+    let _resource_lock = guardian.lock_resources().await;
     let max_memory_mb = state.limits.max_server_memory_mb;
     let server_id = id.clone();
     let record = state
@@ -383,7 +385,6 @@ async fn update(
 
     // Config changes apply on the next start; a running server keeps its
     // current process rather than being restarted out from under its players.
-    let guardian = state.guardian(&id).await?;
     guardian.set_config(record.config.clone()).await;
     guardian.set_policy(record.policy.clone()).await;
 
@@ -413,19 +414,27 @@ async fn delete(
         }
     }
 
+    let guardian = state.guardian(&id).await?;
+    let _resource_lock = guardian.lock_resources().await;
+    let record_after_lock = state
+        .store
+        .server(&id)
+        .await
+        .ok_or_else(|| ApiError::NotFound(format!("server {id}")))?;
+
     state
         .store
         .update(|data| data.servers.retain(|s| s.id != id))
         .await?;
     tracing::info!(server = %id, by = %admin.username, "server deleted");
-    state.remove_guardian(&id).await;
+    state.remove_guardian_locked(&id, guardian).await;
 
     // Server files are deliberately left on disk: deleting a world by clicking
     // a button in a web UI is not a mistake anyone should be able to make.
     Ok(Json(serde_json::json!({
         "ok": true,
         "files_kept": true,
-        "playit_tunnel_deleted": record.playit.is_some()
+        "playit_tunnel_deleted": record_after_lock.playit.is_some()
     })))
 }
 
@@ -458,6 +467,7 @@ async fn power(
     let _server_lock = state.server_mutation_lock.lock().await;
     authorized(&state, &identity, &id).await?;
     let guardian = state.guardian(&id).await?;
+    let _resource_lock = guardian.lock_resources().await;
 
     match body.action {
         PowerAction::Start => guardian.start().await?,

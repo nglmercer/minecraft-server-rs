@@ -31,6 +31,7 @@ use clap::Parser;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::watch;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
@@ -38,6 +39,7 @@ use crate::limits::ResourceLimits;
 use crate::state::AppState;
 use crate::state::PlayitMode;
 use crate::store::User;
+use tray::{TrayConfig, TrayHandle};
 
 /// Command line options.
 #[derive(Parser, Debug)]
@@ -63,6 +65,11 @@ struct Args {
     /// proxy; this flag explicitly acknowledges the risk.
     #[arg(long, env = "MCPANEL_ALLOW_INSECURE_HTTP")]
     allow_insecure_http: bool,
+
+    /// Explicitly permit Minecraft to run without a platform OS sandbox when
+    /// the host helper is unavailable. This weakens tenant isolation.
+    #[arg(long, env = "MCPANEL_ALLOW_UNSANDBOXED_SERVERS")]
+    allow_unsandboxed_servers: bool,
 
     /// Maximum multipart upload request size.
     #[arg(
@@ -170,7 +177,13 @@ async fn main() -> Result<()> {
         max_server_memory_mb,
     };
     limits.validate()?;
-    let state = AppState::bootstrap_with_limits(&args.data_dir, args.playit_mode, limits).await?;
+    let state = AppState::bootstrap_with_limits_and_sandbox(
+        &args.data_dir,
+        args.playit_mode,
+        limits,
+        args.allow_unsandboxed_servers,
+    )
+    .await?;
 
     let server_result = async {
         ensure_admin(&state).await?;
@@ -203,20 +216,39 @@ async fn main() -> Result<()> {
             .await
             .with_context(|| format!("binding {}", args.bind))?;
 
+        let local_addr = listener
+            .local_addr()
+            .context("reading the panel listener address")?;
+        let tray = match tray::start(TrayConfig::new(format!(
+            "http://127.0.0.1:{}",
+            local_addr.port()
+        ))) {
+            Ok(tray) => Some(tray),
+            Err(error) => {
+                tracing::warn!(error = %error, "system tray is unavailable; the panel will continue without it");
+                None
+            }
+        };
+        let tray_exit = tray.as_ref().map(TrayHandle::exit_signal);
+
         tracing::info!(
             "panel listening on http://{} (use a TLS reverse proxy for remote access)",
             args.bind
         );
 
-        axum::serve(
+        let serve_result = axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
         )
-        .with_graceful_shutdown(shutdown())
+        .with_graceful_shutdown(shutdown_with_tray(tray_exit))
         .await
-        .context("server error")?;
+        .context("server error");
 
-        Ok::<(), anyhow::Error>(())
+        if let Some(tray) = tray {
+            tray.shutdown();
+        }
+
+        serve_result
     }
     .await;
 
@@ -288,6 +320,23 @@ async fn shutdown() {
     tracing::info!("shutting down");
 }
 
+/// Resolve on a native tray Exit action or the usual process signals.
+async fn shutdown_with_tray(tray_exit: Option<watch::Receiver<bool>>) {
+    let Some(mut tray_exit) = tray_exit else {
+        shutdown().await;
+        return;
+    };
+
+    tokio::select! {
+        _ = shutdown() => {}
+        changed = tray_exit.changed() => {
+            if changed.is_ok() && *tray_exit.borrow() {
+                tracing::info!("shutting down from the system tray");
+            }
+        }
+    }
+}
+
 async fn security_headers(request: Request<Body>, next: Next) -> Response {
     let secure = request
         .headers()
@@ -356,5 +405,18 @@ mod tests {
 
         add_security_headers(&mut headers, true);
         assert!(headers.get(header::STRICT_TRANSPORT_SECURITY).is_some());
+    }
+
+    #[tokio::test]
+    async fn tray_exit_signal_requests_graceful_shutdown() {
+        let (sender, receiver) = watch::channel(false);
+        sender.send(true).expect("test receiver should be alive");
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            shutdown_with_tray(Some(receiver)),
+        )
+        .await
+        .expect("tray exit should wake the shutdown path");
     }
 }

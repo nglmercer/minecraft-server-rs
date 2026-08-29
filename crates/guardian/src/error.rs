@@ -71,6 +71,10 @@ pub enum Error {
     #[error("archive exceeds its safety limits: {0}")]
     ArchiveLimit(String),
 
+    /// Restoring this archive would exceed the server's configured disk quota.
+    #[error("server storage quota exceeded")]
+    ServerDiskQuotaExceeded,
+
     /// Provisioning exceeded the configured limit.
     #[error("preparation did not finish within {0}s")]
     PrepareTimedOut(u64),
@@ -91,6 +95,13 @@ pub enum Error {
     /// Provisioning or launching was cancelled by an operator.
     #[error("server start was cancelled")]
     StartCancelled,
+
+    /// No supported OS sandbox is available and unsandboxed execution was not
+    /// explicitly enabled by the operator.
+    #[error(
+        "a Minecraft process sandbox is unavailable; pass --allow-unsandboxed-servers to explicitly allow unsafe execution"
+    )]
+    SandboxUnavailable,
 }
 
 impl Error {
@@ -113,10 +124,12 @@ impl Error {
             | Error::BackupNotFound(_)
             | Error::UnsafeArchiveEntry(_)
             | Error::ArchiveLimit(_)
+            | Error::ServerDiskQuotaExceeded
             | Error::PrepareTimedOut(_)
             | Error::InvalidConfiguration(_)
             | Error::InvalidCommand(_)
-            | Error::StartCancelled => self.to_string(),
+            | Error::StartCancelled
+            | Error::SandboxUnavailable => self.to_string(),
             Error::JavaUnavailable(major, _) => format!("Java {major} is unavailable"),
             Error::Java(_)
             | Error::Core(_)

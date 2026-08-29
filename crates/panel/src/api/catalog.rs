@@ -91,22 +91,27 @@ async fn builds(
 pub struct JavaView {
     major: u32,
     version: String,
-    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
     vendor: Option<String>,
     jdk: bool,
 }
 
-async fn javas(_: Identity) -> Json<Vec<JavaView>> {
+fn java_view(install: &java_path::JavaInstallation, include_path: bool) -> JavaView {
+    JavaView {
+        major: install.major(),
+        version: install.version.to_string(),
+        path: include_path.then(|| install.java.display().to_string()),
+        vendor: install.vendor.clone(),
+        jdk: install.is_jdk(),
+    }
+}
+
+async fn javas(identity: Identity) -> Json<Vec<JavaView>> {
     let installs = java_path::discover().unwrap_or_default();
     let mut out: Vec<JavaView> = installs
         .iter()
-        .map(|i| JavaView {
-            major: i.major(),
-            version: i.version.to_string(),
-            path: i.java.display().to_string(),
-            vendor: i.vendor.clone(),
-            jdk: i.is_jdk(),
-        })
+        .map(|install| java_view(install, identity.admin))
         .collect();
     out.sort_by_key(|java| std::cmp::Reverse(java.major));
     Json(out)
@@ -156,4 +161,41 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/catalog/{provider}/{version}/builds", get(builds))
         .route("/catalog/javas", get(javas))
         .route("/system", get(system))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use java_path::{Architecture, DiscoverySource, JavaKind, JavaVersion, Platform};
+    use std::path::PathBuf;
+
+    fn installation() -> java_path::JavaInstallation {
+        java_path::JavaInstallation {
+            home: PathBuf::from("/host/jdks/java-21"),
+            java: PathBuf::from("/host/jdks/java-21/bin/java"),
+            javac: Some(PathBuf::from("/host/jdks/java-21/bin/javac")),
+            version: JavaVersion::parse("21.0.1").unwrap(),
+            vendor: Some("Test Vendor".into()),
+            architecture: Architecture::X86_64,
+            platform: Platform::Linux,
+            kind: JavaKind::Jdk,
+            source: DiscoverySource::UserDirectory,
+        }
+    }
+
+    #[test]
+    fn regular_java_catalog_entries_redact_host_paths() {
+        let value = serde_json::to_value(java_view(&installation(), false)).unwrap();
+
+        assert_eq!(value["major"], 21);
+        assert!(value.get("path").is_none());
+        assert!(!value.to_string().contains("/host/jdks"));
+    }
+
+    #[test]
+    fn admin_java_catalog_entries_keep_the_path_for_administration() {
+        let value = serde_json::to_value(java_view(&installation(), true)).unwrap();
+
+        assert_eq!(value["path"], "/host/jdks/java-21/bin/java");
+    }
 }

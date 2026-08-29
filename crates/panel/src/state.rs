@@ -7,7 +7,7 @@ use playit_integration::PlayitManager;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock, Semaphore};
+use tokio::sync::{Mutex, OwnedMutexGuard, RwLock, Semaphore};
 
 use crate::auth::{LoginLimiter, Sessions};
 use crate::error::ApiError;
@@ -46,8 +46,8 @@ pub struct AppState {
     pub playit: Arc<PlayitManager>,
     /// Installation-wide request/filesystem resource limits.
     pub limits: ResourceLimits,
-    /// Serializes operations whose quota is measured before bytes are emitted.
-    pub resource_lock: Mutex<()>,
+    /// Policy for platform sandbox helpers used by each Guardian.
+    sandbox_policy: guardian::sandbox::SandboxPolicy,
     /// Bounds open file descriptors held by browser downloads.
     pub download_slots: Arc<Semaphore>,
     /// Bounds live WebSocket connections and their associated tasks.
@@ -68,17 +68,35 @@ impl AppState {
         data_dir: impl Into<PathBuf>,
         playit_mode: PlayitMode,
     ) -> Result<Arc<Self>> {
-        Self::bootstrap_with_limits(data_dir, playit_mode, ResourceLimits::default()).await
+        Self::bootstrap_with_limits_and_sandbox(
+            data_dir,
+            playit_mode,
+            ResourceLimits::default(),
+            false,
+        )
+        .await
     }
 
     /// Build state with explicit resource limits.
+    #[allow(dead_code)]
     pub async fn bootstrap_with_limits(
         data_dir: impl Into<PathBuf>,
         playit_mode: PlayitMode,
         limits: ResourceLimits,
     ) -> Result<Arc<Self>> {
+        Self::bootstrap_with_limits_and_sandbox(data_dir, playit_mode, limits, false).await
+    }
+
+    /// Build state with explicit resource limits and sandbox policy.
+    pub async fn bootstrap_with_limits_and_sandbox(
+        data_dir: impl Into<PathBuf>,
+        playit_mode: PlayitMode,
+        limits: ResourceLimits,
+        allow_unsandboxed_servers: bool,
+    ) -> Result<Arc<Self>> {
         limits.validate()?;
         let data_dir = data_dir.into();
+        let sandbox_policy = guardian::sandbox::SandboxPolicy::new(allow_unsandboxed_servers);
         tokio::fs::create_dir_all(&data_dir)
             .await
             .with_context(|| format!("creating {}", data_dir.display()))?;
@@ -142,7 +160,10 @@ impl AppState {
 
         let mut guardians = HashMap::new();
         for record in store.read().await.servers {
-            guardians.insert(record.id.clone(), spawn_guardian(&record, &data_dir));
+            guardians.insert(
+                record.id.clone(),
+                spawn_guardian(&record, &data_dir, sandbox_policy),
+            );
         }
 
         Ok(Arc::new(AppState {
@@ -155,7 +176,7 @@ impl AppState {
             tickets: Tickets::default(),
             playit: Arc::new(playit),
             limits,
-            resource_lock: Mutex::new(()),
+            sandbox_policy,
             download_slots: Arc::new(Semaphore::new(
                 crate::limits::DEFAULT_MAX_CONCURRENT_DOWNLOADS,
             )),
@@ -176,9 +197,19 @@ impl AppState {
             .ok_or_else(|| ApiError::NotFound(format!("server {id}")))
     }
 
+    /// Acquire the filesystem/quota lock owned by one live server.
+    pub async fn server_resource_lock(
+        &self,
+        id: &str,
+    ) -> std::result::Result<(Arc<Guardian>, OwnedMutexGuard<()>), ApiError> {
+        let guardian = self.guardian(id).await?;
+        let lock = guardian.lock_resources().await;
+        Ok((guardian, lock))
+    }
+
     /// Register a guardian for a newly created server.
     pub async fn insert_guardian(&self, record: &ServerRecord) -> Arc<Guardian> {
-        let guardian = spawn_guardian(record, &self.data_dir);
+        let guardian = spawn_guardian(record, &self.data_dir, self.sandbox_policy);
         self.guardians
             .write()
             .await
@@ -186,23 +217,24 @@ impl AppState {
         guardian
     }
 
-    /// Drop a guardian, killing its process if one is running.
-    pub async fn remove_guardian(&self, id: &str) {
-        let guardian = self.guardians.read().await.get(id).cloned();
-        if let Some(guardian) = guardian {
-            let _ = guardian.stop().await;
-            if !guardian
-                .wait_for_exit(std::time::Duration::from_secs(10))
-                .await
-            {
-                tracing::error!(
-                    server = %id,
-                    "server process did not exit; retaining guardian to avoid an orphan"
-                );
-                return;
-            }
-            self.guardians.write().await.remove(id);
+    /// Stop and drop a guardian after its resource lock has been acquired.
+    ///
+    /// Server deletion uses this while holding the lock so an in-flight file
+    /// operation completes before the guardian is removed. The record should
+    /// already have been removed from the store before this method is called.
+    pub async fn remove_guardian_locked(&self, id: &str, guardian: Arc<Guardian>) {
+        let _ = guardian.stop().await;
+        if !guardian
+            .wait_for_exit(std::time::Duration::from_secs(10))
+            .await
+        {
+            tracing::error!(
+                server = %id,
+                "server process did not exit; retaining guardian to avoid an orphan"
+            );
+            return;
         }
+        self.guardians.write().await.remove(id);
     }
 
     /// The on-disk directory for `id`, whether or not it exists yet.
@@ -227,8 +259,17 @@ impl AppState {
     }
 }
 
-fn spawn_guardian(record: &ServerRecord, data_dir: &Path) -> Arc<Guardian> {
-    Guardian::new(record.config.clone(), record.policy.clone(), data_dir)
+fn spawn_guardian(
+    record: &ServerRecord,
+    data_dir: &Path,
+    sandbox_policy: guardian::sandbox::SandboxPolicy,
+) -> Arc<Guardian> {
+    Guardian::new_with_sandbox_policy(
+        record.config.clone(),
+        record.policy.clone(),
+        data_dir,
+        sandbox_policy,
+    )
 }
 
 /// Rewrite server directories to the panel-managed roots and validate the
@@ -369,7 +410,10 @@ pub(crate) async fn secure_directory(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{AppState, PlayitMode};
+    use crate::store::ServerRecord;
+    use guardian::{GuardianConfig, ServerConfig};
     use playit_integration::{PlayitConnectionState, PlayitManager};
+    use std::sync::Arc;
     use std::time::Duration;
 
     #[tokio::test]
@@ -413,6 +457,35 @@ mod tests {
             PlayitConnectionState::Unavailable
         );
 
+        state.playit.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn removing_a_server_drops_its_lifecycle_owned_resource_lock() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let state = AppState::bootstrap(data_dir.path(), PlayitMode::External)
+            .await
+            .unwrap();
+        let record = ServerRecord {
+            id: "server-1".into(),
+            name: "Server".into(),
+            config: ServerConfig::paper(state.server_dir("server-1"), "1.21.8"),
+            policy: GuardianConfig::default(),
+            playit: None,
+            created_at: "2026-08-28T00:00:00Z".into(),
+        };
+        let guardian = state.insert_guardian(&record).await;
+        let weak = Arc::downgrade(&guardian);
+        let resource_lock = guardian.lock_resources().await;
+
+        state
+            .remove_guardian_locked("server-1", Arc::clone(&guardian))
+            .await;
+        assert!(state.guardian("server-1").await.is_err());
+
+        drop(resource_lock);
+        drop(guardian);
+        assert!(weak.upgrade().is_none());
         state.playit.shutdown().await.unwrap();
     }
 }

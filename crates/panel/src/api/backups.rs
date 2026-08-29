@@ -55,14 +55,15 @@ async fn create(
     Path(id): Path<String>,
     body: Option<Json<CreateBackup>>,
 ) -> ApiResult<Json<guardian::Backup>> {
-    let directory = authorized(&state, &identity, &id).await?;
+    let _ = authorized(&state, &identity, &id).await?;
     let note = body.map(|Json(b)| b.note).unwrap_or_default();
     if note.len() > 1024 || note.contains(['\0', '\r', '\n']) {
         return Err(ApiError::BadRequest(
             "backup note is too long or contains control characters".into(),
         ));
     }
-    let _resource_lock = state.resource_lock.lock().await;
+    let (server, _resource_lock) = state.server_resource_lock(&id).await?;
+    let directory = authorized(&state, &identity, &id).await?;
 
     let backup_dir = state.backup_dir(&id);
     crate::state::secure_directory(&backup_dir)
@@ -85,7 +86,6 @@ async fn create(
 
     // Taking a backup while chunks are being written produces a torn world, so
     // flush first and let the server keep running.
-    let server = state.guardian(&id).await?;
     if server.status().await.is_running() {
         let _ = server.command("save-all flush").await;
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -111,23 +111,26 @@ async fn restore(
     identity: Identity,
     Path((id, backup)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let _server_lock = state.server_mutation_lock.lock().await;
+    let _ = authorized(&state, &identity, &id).await?;
+    let (server, _resource_lock) = state.server_resource_lock(&id).await?;
     let directory = authorized(&state, &identity, &id).await?;
 
     // Unpacking a world under a live JVM corrupts it, so this is a hard error
     // rather than an implicit stop the operator did not ask for.
-    if state.guardian(&id).await?.status().await.is_running() {
+    if server.status().await.is_running()
+        || server.status().await == guardian::ServerStatus::Preparing
+    {
         return Err(ApiError::BadRequest(
             "stop the server before restoring a backup".into(),
         ));
     }
 
-    let _resource_lock = state.resource_lock.lock().await;
-    guardian::backup::restore_with_limits(
+    guardian::backup::restore_with_limits_and_quota(
         &state.backup_dir(&id),
         &backup,
         &directory,
         state.limits.archive_limits(),
+        state.limits.max_server_disk_bytes,
     )
     .await?;
     tracing::info!(server = %id, backup = %backup, "backup restored");
@@ -139,7 +142,8 @@ async fn delete(
     identity: Identity,
     Path((id, backup)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let _resource_lock = state.resource_lock.lock().await;
+    let _ = authorized(&state, &identity, &id).await?;
+    let (_server, _resource_lock) = state.server_resource_lock(&id).await?;
     authorized(&state, &identity, &id).await?;
     guardian::backup::delete(&state.backup_dir(&id), &backup).await?;
     Ok(Json(serde_json::json!({ "ok": true })))

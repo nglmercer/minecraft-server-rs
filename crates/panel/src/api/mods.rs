@@ -531,7 +531,13 @@ async fn install(
             "Modrinth did not provide a checksum for this file".into(),
         ));
     }
-    let _resource_lock = state.resource_lock.lock().await;
+    // Metadata lookup and URL validation stay outside the server lock so a
+    // slow Modrinth response cannot block unrelated work. Re-check the record
+    // after locking so deletion/configuration changes cannot redirect the
+    // downloaded file into a stale server directory.
+    let (_guardian, _resource_lock) = state.server_resource_lock(&id).await?;
+    let record = authorized(&state, &identity, &id).await?;
+    let loader = loader_for(&record.config.core)?;
     let directory = std::path::PathBuf::from(loader.directory);
     let target = directory.join(&filename);
     let fs = crate::filesystem::open(record.config.directory.clone()).await?;

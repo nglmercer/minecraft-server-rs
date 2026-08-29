@@ -38,6 +38,10 @@ Or download a self-contained binary from [Releases](https://github.com/nglmercer
 
 Default bind is loopback. For remote access keep it on loopback behind an HTTPS reverse proxy. Direct non-loopback plaintext HTTP requires `--allow-insecure-http` explicitly and is only for isolated networks.
 
+On Windows, `mcpanel` also starts a small system-tray presence. Its first
+milestone provides Open Panel and Exit; server controls and live status are
+planned for later milestones.
+
 > Full install, data-dir layout, and static vs glibc builds → [docs/getting-started.md](docs/getting-started.md)
 
 ## Documentation
@@ -65,6 +69,8 @@ Browse all guides in [`docs/`](docs/README.md). Security disclosure policy is in
 |------|------------|
 | `crates/guardian` | Lifecycle library. No HTTP, no panel concepts. |
 | `crates/panel` | `mcpanel` binary: API, auth, embedded frontend. |
+| `crates/tray` | Windows system-tray presence and panel lifecycle exit control. |
+| `assets/mcp.ico` | Embedded Windows tray icon. |
 | `crates/playit-integration` | Embedded Playit runtime and optional daemon IPC. |
 | `web` | Vite + Preact + TypeScript + Tailwind v4 frontend. |
 | `vendor/java-path-rs` | Submodule: Java discovery and provisioning. |
@@ -72,7 +78,11 @@ Browse all guides in [`docs/`](docs/README.md). Security disclosure policy is in
 
 Runtime lives under `--data-dir` (`panel.json`, `playit/secret.toml`, `jdks/`, `servers/<uuid>/`, `backups/<uuid>/`). Details in [Getting Started](docs/getting-started.md) and [Architecture](docs/architecture.md).
 
-On Linux install `bubblewrap` (`bwrap`) for the strongest sandbox; see [Security](docs/security.md).
+On Linux install `bubblewrap` (`bwrap`) for the strongest sandbox; on macOS use
+the available `sandbox-exec` helper. If the platform sandbox is unavailable,
+Minecraft will not start unless you explicitly pass
+`--allow-unsandboxed-servers` (or set `MCPANEL_ALLOW_UNSANDBOXED_SERVERS=true`).
+See [Security](docs/security.md) before granting untrusted operators access.
 
 ## Development
 
@@ -89,7 +99,7 @@ Everything under `/api`. Browser sessions use `HttpOnly` session + CSRF cookies;
 
 ## Security
 
-Four trust levels: panel admin ≈ host admin; server operator (scoped to assigned ids); untrusted plugin/mod (arbitrary JVM code); host administrator. File APIs are capability-based and reject traversal/symlink/hard-link attacks; Linux `bwrap` / macOS `sandbox-exec` sandbox each Minecraft process. See [Security](docs/security.md) before granting untrusted operators access.
+Four trust levels: panel admin ≈ host admin; server operator (scoped to assigned ids); untrusted plugin/mod (arbitrary JVM code); host administrator. File APIs are capability-based and reject traversal/symlink/hard-link attacks; Linux `bwrap` / macOS `sandbox-exec` sandbox each Minecraft process when available. Filesystem/API containment is not OS tenant isolation: plugins and mods execute arbitrary JVM code, and network access is not strongly isolated. See [Security](docs/security.md) before granting untrusted operators access.
 
 ## Status
 
