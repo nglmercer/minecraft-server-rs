@@ -1,0 +1,6 @@
+[advisories]
+# Keep the advisory database check explicit and fail only on actual RustSec
+# advisories. Informational notices and dev-only metadata are not silently
+# turned into a release blocker.
+version = 2
+ignore = []

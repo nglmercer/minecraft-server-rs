@@ -38,8 +38,13 @@ Download a binary from [Releases](https://github.com/nglmercer/minecraft-server-
 git clone --recurse-submodules https://github.com/nglmercer/minecraft-server-rs
 cd minecraft-server-rs
 ./build.sh
-./target/release/mcpanel --data-dir ./data --bind 0.0.0.0:8080
+./target/release/mcpanel --data-dir ./data --bind 127.0.0.1:8080
 ```
+
+The default bind is loopback. For remote access, keep the panel on loopback
+and put it behind an HTTPS reverse proxy. Direct non-loopback plaintext HTTP is
+refused unless `--allow-insecure-http` is supplied explicitly for a trusted,
+isolated network.
 
 Two Linux builds are published: `linux-x86_64` links against glibc, and
 `linux-x86_64-static` is statically linked, for Alpine or any distro older than
@@ -69,6 +74,12 @@ data/
 ├── servers/<uuid>/     one server's working directory (worlds, plugins, jar)
 └── backups/<uuid>/     server backups
 ```
+
+On Linux, install `bubblewrap` (`bwrap`) so Minecraft processes receive the
+strongest sandbox this binary can use. The panel falls back to application-level
+path and environment restrictions when the helper is unavailable; see the
+[security model](#security-model) before using that fallback for multiple
+untrusted operators.
 
 ## Why this stack
 
@@ -112,10 +123,11 @@ controls. Deleting a server or tunnel removes a panel-managed tunnel first
 when the service is available.
 
 Operators who intentionally run a compatible external `playitd` can select the
-legacy IPC backend explicitly:
+legacy IPC backend explicitly. Keep the listener on loopback, or explicitly
+acknowledge the risk with `--allow-insecure-http` on an isolated network:
 
 ```sh
-mcpanel --playit-mode external --data-dir ./data --bind 0.0.0.0:8080
+mcpanel --playit-mode external --data-dir ./data --bind 127.0.0.1:8080
 ```
 
 The `MCPANEL_PLAYIT_MODE=external` environment variable is equivalent. External
@@ -138,14 +150,16 @@ panel (mcpanel)
 
 ## API
 
-Everything is under `/api`. Authenticate with `Authorization: Bearer <token>`;
-the WebSocket takes `?token=` instead, because browsers cannot set headers on a
-handshake.
+Everything is under `/api`. Browser sessions use an `HttpOnly` session cookie
+and a separate CSRF cookie. API clients may continue to use
+`Authorization: Bearer <token>`. A browser first calls
+`POST /servers/{id}/ws/ticket`, then connects to the WebSocket with its
+short-lived one-use `?ticket=`.
 
 | Method              | Path                                   | Purpose                            |
 | ------------------- | -------------------------------------- | ---------------------------------- |
-| `POST`              | `/auth/login`                          | Exchange credentials for a token   |
-| `POST`              | `/auth/logout`                         | Invalidate the current token       |
+| `POST`              | `/auth/login`                          | Create a cookie session             |
+| `POST`              | `/auth/logout`                         | Revoke the current session          |
 | `GET`               | `/auth/me`                             | The current account                |
 | `POST`              | `/auth/password`                       | Change your password               |
 | `GET`               | `/playit/status`                       | Inspect Playit service state       |
@@ -161,6 +175,7 @@ handshake.
 | `POST`              | `/servers/{id}/reinstall`              | Re-resolve and download the artifact |
 | `GET`               | `/servers/{id}/logs`                   | The retained console buffer        |
 | `WS`                | `/servers/{id}/ws`                     | Live console, both directions      |
+| `POST`              | `/servers/{id}/ws/ticket`              | Short-lived one-use console grant  |
 | `GET` `PUT` `DELETE`| `/servers/{id}/files`                  | List / write / delete              |
 | `GET`               | `/servers/{id}/files/read`             | Read a text file                   |
 | `GET`               | `/servers/{id}/files/sizes`            | Measure the subdirectories of a path |
@@ -195,8 +210,9 @@ A download is a browser navigation, and a browser cannot attach an
 `Authorization` header to one. Rather than putting the session token in the
 query string — where it lands in browser history, proxy logs and the panel's own
 request log — the client asks for a *ticket* first. A ticket names one file or
-one backup, expires after a minute, and grants nothing else. `?token=` is
-accepted on the WebSocket route alone, where there is no alternative.
+one backup, expires after a minute, and grants nothing else. Console tickets
+expire faster, are bound to the issuing session, and are consumed at the
+handshake. Long-lived session tokens are never accepted in query strings.
 
 ### Accounts and access
 
@@ -204,6 +220,67 @@ Admins see and manage everything. A regular account only reaches the servers it
 has been granted, across every endpoint including the console socket and the
 file manager. Changing an account's password or permissions revokes its existing
 sessions, so a demotion takes effect immediately rather than at the next login.
+
+## Security model
+
+The panel has four materially different trust levels:
+
+* A **panel administrator** can manage every server, account, tunnel, and
+  panel setting. Treat an administrator as a host administrator.
+* A **server operator** can use only the server ids assigned to that account:
+  its power controls, console, files, backups, and supported Modrinth installs.
+  The API consistently hides unassigned servers as `404`.
+* **Minecraft plugins and mods are not trusted code.** Installing one gives
+  arbitrary Java code the authority available to that server process. A plugin
+  can read or modify everything visible inside its process sandbox and can
+  consume its CPU, memory, disk, process, and network budget. Do not install an
+  untrusted plugin merely because it came from Modrinth.
+* The **host administrator** owns the operating system, the panel account, its
+  data directory, and any external services. No application can protect a
+  server from a host administrator.
+
+Server-scoped file operations use descriptor-relative capabilities and reject
+path traversal, symlink parents, final symlinks, hard links, and archive link
+entries. Uploaded and restored archives are bounded by entry, per-file, and
+expanded-byte limits. Uploads, editor writes, Modrinth installs, and retained
+backups are quota checked before publication.
+
+On Linux, `bwrap` places each Minecraft process in a separate PID/filesystem
+view, exposes only its server directory and the selected JDK read-only, and
+uses a server-local home and temporary directory. On macOS the available
+`sandbox-exec` profile provides a comparable filesystem boundary. If the helper
+is absent, or on Windows where this binary does not currently create a kernel
+job/container identity, the panel still sanitizes environment variables and
+uses race-resistant server paths, but a Java process runs as the panel's OS
+user. That fallback is **not strong tenant isolation**: deploy the panel under
+a dedicated low-privilege service account and do not grant mutually untrusted
+operators access to it. CPU, process-count, file-descriptor, and native-memory
+limits are not a substitute for cgroups/job objects on those platforms.
+
+The selected JVM heap, request bodies, archive expansion, downloads, server
+files, and backups have finite defaults. Tune them with the `--max-*` options
+for the host, and use OS-level cgroups, quotas, or a container when hard host
+resource isolation is required.
+
+### Secure remote deployment
+
+The binary serves HTTP and does not terminate TLS itself. Keep it on loopback:
+
+```sh
+mcpanel --data-dir /var/lib/mcpanel --bind 127.0.0.1:8080
+```
+
+Terminate HTTPS in a reverse proxy, forward only to that loopback listener,
+and configure the proxy to pass WebSocket upgrades. For example, a Caddy
+`reverse_proxy 127.0.0.1:8080` site provides TLS and WebSocket forwarding by
+default. Do not expose `0.0.0.0:8080` directly. The
+`--allow-insecure-http` option exists for development or an explicitly isolated
+network and is not a production security control.
+
+The data directory should be owned by the panel service account with mode
+`0700`; `panel.json` and the embedded Playit secret are written with owner-only
+permissions on Unix. Do not put backups or the data directory in a shared
+directory, and do not pass credentials through command-line arguments or logs.
 
 ### Starting a server
 
@@ -255,6 +332,14 @@ every result will actually load. Bukkit-family servers install to `plugins/`,
 Fabric and Forge to `mods/`, and vanilla is refused with a suggestion rather
 than a silent no-op.
 
+Uploads default to 256 MiB. Archive extraction defaults to 10,000 entries,
+1 GiB expanded output, and 256 MiB per file. Each server and its retained
+backups have configurable 50 GiB quotas by default. Change these with
+`--max-upload-bytes`, `--max-extracted-bytes`, `--max-archive-entries`,
+`--max-extracted-file-bytes`, `--max-server-disk-bytes`, and
+`--max-backup-disk-bytes`; limits apply while bytes are being written, not just
+to archive metadata.
+
 ## Interface
 
 Icons are inline SVG rather than an icon font or a sprite sheet: the frontend is
@@ -292,6 +377,11 @@ binaries under Wine.
 
 One caveat: `build.sh` is a shell script. On Windows run the two steps it wraps:
 `cd web && npm install && npm run build`, then `cargo build --release`.
+
+On Windows, the panel can enforce application-level quotas and containment but
+does not yet create a per-server Windows job object or restricted OS identity.
+Use a separate Windows service account, container, or job-object infrastructure
+per trust domain when hard isolation is required.
 
 [`sysinfo`]: https://crates.io/crates/sysinfo
 
