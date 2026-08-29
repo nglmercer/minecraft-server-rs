@@ -1,6 +1,7 @@
 //! The HTTP API.
 
 pub mod auth;
+pub mod backup_settings;
 pub mod backups;
 pub mod catalog;
 pub mod console;
@@ -38,10 +39,14 @@ pub fn router_with_limits(limits: ResourceLimits) -> Router<Arc<AppState>> {
     Router::new()
         .nest("/auth", auth::router())
         .merge(servers::collection_router())
-        .nest("/servers", per_server)
+        .nest(
+            "/servers",
+            per_server.merge(backup_settings::server_router()),
+        )
         .merge(users::router())
         .merge(catalog::router())
         .merge(playit::router())
+        .merge(backup_settings::router())
         .layer(axum::middleware::from_fn(crate::auth::csrf_protect))
         .layer(DefaultBodyLimit::max(crate::limits::MAX_JSON_BODY_BYTES))
         // Without this, a mistyped API path falls through to the SPA and

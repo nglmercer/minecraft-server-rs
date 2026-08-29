@@ -1,5 +1,6 @@
 import type {
   Backup,
+  BackupStorageSettings,
   ConsoleLine,
   FileEntry,
   Installed,
@@ -258,6 +259,22 @@ export const api = {
 
   createBackup: (id: string, note: string) =>
     request<Backup>(`/servers/${id}/backups`, { method: "POST", body: json({ note }) }),
+
+  backupSettings: () => request<BackupStorageSettings>("/settings/backups"),
+
+  updateBackupSettings: (body: Record<string, unknown>) =>
+    request<BackupStorageSettings>("/settings/backups", { method: "PATCH", body: json(body) }),
+
+  testBackupSettings: () =>
+    request<{ ok: boolean; message: string }>("/settings/backups/test", { method: "POST" }),
+
+  uploadBackupSecret: (content: string) =>
+    request<{ ok: boolean }>("/settings/backups/secret", { method: "POST", body: json({ content }) }),
+
+  serverBackupSettings: (id: string) => request<BackupStorageSettings>(`/servers/${id}/backup-settings`),
+
+  updateServerBackupSettings: (id: string, body: Record<string, unknown>) =>
+    request<BackupStorageSettings>(`/servers/${id}/backup-settings`, { method: "PATCH", body: json(body) }),
 
   restoreBackup: (id: string, backup: string) =>
     request<{ ok: boolean }>(`/servers/${id}/backups/${backup}/restore`, { method: "POST" }),

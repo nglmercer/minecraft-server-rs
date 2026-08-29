@@ -11,10 +11,11 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, OwnedMutexGuard, RwLock, Semaphore};
 
 use crate::auth::{LoginLimiter, Sessions};
+use crate::backups::retention::plan_retention;
 use crate::error::ApiError;
 use crate::limits::ResourceLimits;
 use crate::metrics::Metrics;
-use crate::store::{PanelData, ServerRecord, Store};
+use crate::store::{BackupStorageSettings, PanelData, ServerRecord, Store, StoredBackup};
 use crate::tickets::Tickets;
 
 /// The Playit backend used by the panel.
@@ -59,6 +60,8 @@ pub struct AppState {
     /// as one lifecycle.  In particular, a delete cannot race an attachment
     /// into leaving an untracked public tunnel behind.
     pub server_mutation_lock: Mutex<()>,
+    /// Per-server backup locks to serialize creation/deletion/restore/retention per server.
+    backup_locks: RwLock<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 impl AppState {
@@ -188,6 +191,11 @@ impl AppState {
             );
         }
 
+        // Migrate existing local backups into new StoredBackup metadata if needed
+        migrate_backup_metadata(&store, &data_dir).await?;
+        // Cleanup stale staging files from previous crashes
+        cleanup_staging(&data_dir).await;
+
         Ok(Arc::new(AppState {
             store,
             sessions: Sessions::default(),
@@ -207,6 +215,7 @@ impl AppState {
             )),
             trusted_proxies,
             server_mutation_lock: Mutex::new(()),
+            backup_locks: RwLock::new(HashMap::new()),
         }))
     }
 
@@ -357,6 +366,73 @@ impl AppState {
         })
         .await;
     }
+
+    /// Per-server backup lock to serialize creation/deletion/restore/retention.
+    pub async fn backup_lock(&self, server_id: &str) -> Arc<Mutex<()>> {
+        let map = self.backup_locks.read().await;
+        if let Some(lock) = map.get(server_id) {
+            return Arc::clone(lock);
+        }
+        drop(map);
+        let mut map = self.backup_locks.write().await;
+        map.entry(server_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    /// Staging directory for temporary cloud backup archives.
+    pub fn staging_dir(&self) -> PathBuf {
+        self.data_dir.join("backups").join(".staging")
+    }
+}
+
+async fn migrate_backup_metadata(store: &Store, data_dir: &Path) -> Result<()> {
+    let existing: Vec<StoredBackup> = store.read().await.backups.clone();
+    if !existing.is_empty() {
+        return Ok(());
+    }
+    // Scan existing local backup directories and import them as StoredBackup with Local provider.
+    let servers = store.read().await.servers.clone();
+    let mut imported = Vec::new();
+    for record in servers {
+        let backup_dir = data_dir.join("backups").join(&record.id);
+        let list = guardian::backup::list(&backup_dir)
+            .await
+            .unwrap_or_default();
+        for b in list {
+            imported.push(StoredBackup {
+                id: b.id.clone(),
+                server_id: record.id.clone(),
+                provider: crate::store::BackupProviderKind::Local,
+                remote_id: b.id.clone(),
+                created_at: b.created_at.clone(),
+                size_bytes: b.size,
+                checksum_sha256: None,
+                note: b.note.clone(),
+            });
+        }
+    }
+    if imported.is_empty() {
+        return Ok(());
+    }
+    store
+        .update(|data| {
+            if data.backups.is_empty() {
+                data.backups = imported.clone();
+            }
+        })
+        .await?;
+    Ok(())
+}
+
+async fn cleanup_staging(data_dir: &Path) {
+    let staging = data_dir.join("backups").join(".staging");
+    let _ = tokio::fs::remove_dir_all(&staging).await;
+    let _ = tokio::fs::create_dir_all(&staging).await;
+    #[cfg(unix)]
+    if let Ok(fs) = guardian::ScopedFs::open(&staging) {
+        let _ = fs.set_private();
+    }
 }
 
 fn spawn_guardian(
@@ -487,6 +563,37 @@ fn validate_persisted_invariants(data: &PanelData, max_memory_mb: u32) -> Result
             }
         }
     }
+
+    data.backup_storage
+        .retention
+        .validate()
+        .map_err(|e| anyhow::anyhow!("invalid backup retention: {e}"))?;
+    if let Some(google) = &data.backup_storage.google_drive {
+        google
+            .validate()
+            .map_err(|e| anyhow::anyhow!("invalid google drive config: {e}"))?;
+    }
+    let mut backup_ids = std::collections::HashSet::new();
+    for b in &data.backups {
+        if !valid_id(&b.id) || !valid_id(&b.server_id) || !ids.contains(&b.server_id) {
+            anyhow::bail!("panel state contains invalid backup {}", b.id);
+        }
+        if !backup_ids.insert(&b.id) {
+            anyhow::bail!("panel state contains duplicate backup {}", b.id);
+        }
+    }
+    for record in &data.servers {
+        if let Some(policy) = &record.backup_policy {
+            policy.retention.validate().map_err(|e| {
+                anyhow::anyhow!("invalid backup retention for server {}: {e}", record.id)
+            })?;
+            if let Some(google) = &policy.google_drive {
+                google.validate().map_err(|e| {
+                    anyhow::anyhow!("invalid google drive for server {}: {e}", record.id)
+                })?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -573,6 +680,7 @@ mod tests {
             policy: GuardianConfig::default(),
             playit: None,
             created_at: "2026-08-28T00:00:00Z".into(),
+            backup_policy: None,
         };
         let guardian = state.insert_guardian(&record).await;
         let weak = Arc::downgrade(&guardian);
@@ -603,6 +711,7 @@ mod tests {
             policy: GuardianConfig::default(),
             playit: None,
             created_at: "2026-08-28T00:00:00Z".into(),
+            backup_policy: None,
         };
         state
             .store
@@ -670,6 +779,7 @@ mod tests {
             policy: GuardianConfig::default(),
             playit: None,
             created_at: "2026-08-28T00:00:00Z".into(),
+            backup_policy: None,
         };
         state
             .store
@@ -730,6 +840,7 @@ mod tests {
             policy: GuardianConfig::default(),
             playit: None,
             created_at: "2026-08-28T00:00:00Z".into(),
+            backup_policy: None,
         };
         let other = ServerRecord {
             id: "srv-2".into(),
@@ -738,6 +849,7 @@ mod tests {
             policy: GuardianConfig::default(),
             playit: None,
             created_at: "2026-08-28T00:00:00Z".into(),
+            backup_policy: None,
         };
         state
             .store
@@ -802,6 +914,7 @@ mod tests {
             policy: GuardianConfig::default(),
             playit: None,
             created_at: "2026-08-28T00:00:00Z".into(),
+            backup_policy: None,
         };
         let guardian = state.insert_guardian(&record).await;
         // Mark shutting down

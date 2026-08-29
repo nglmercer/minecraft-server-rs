@@ -228,6 +228,7 @@ async fn create(
         policy: GuardianConfig::default(),
         playit: None,
         created_at: now(),
+        backup_policy: None,
     };
     validate_record(&state, &record)?;
     // Provisional directory: must be removed unless the store commit succeeds.
@@ -665,6 +666,7 @@ mod tests {
             policy: GuardianConfig::default(),
             playit: None,
             created_at: "2026-08-29T00:00:00Z".into(),
+            backup_policy: None,
         };
         state
             .store

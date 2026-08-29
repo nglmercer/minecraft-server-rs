@@ -124,7 +124,27 @@ export interface Backup {
   id: string;
   created_at: string;
   size: number;
+  size_bytes?: number;
   note: string;
+  provider?: "local" | "google_drive";
+  remote_id?: string;
+  checksum_sha256?: string | null;
+  server_id?: string;
+}
+
+export interface BackupRetention {
+  max_backups: number;
+  max_age_days?: number | null;
+}
+
+export interface BackupStorageSettings {
+  provider: "local" | "google_drive";
+  retention: BackupRetention;
+  google_drive?: {
+    folder_id: string;
+    credentials_present: boolean;
+    configured: boolean;
+  } | null;
 }
 
 export interface Project {

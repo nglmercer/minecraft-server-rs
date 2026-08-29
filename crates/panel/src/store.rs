@@ -43,6 +43,129 @@ pub struct PlayitBinding {
     pub local_port: u16,
 }
 
+/// How many and how long to keep successful backups.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupRetentionPolicy {
+    /// Keep at most this many successful backups.
+    pub max_backups: usize,
+    /// Delete backups older than this many days, if Some.
+    pub max_age_days: Option<u32>,
+}
+
+impl Default for BackupRetentionPolicy {
+    fn default() -> Self {
+        Self {
+            max_backups: 1,
+            max_age_days: None,
+        }
+    }
+}
+
+impl BackupRetentionPolicy {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.max_backups == 0 {
+            return Err("max_backups must be at least 1".into());
+        }
+        if self.max_backups > 1000 {
+            return Err("max_backups must not exceed 1000".into());
+        }
+        if let Some(days) = self.max_age_days {
+            if days == 0 {
+                return Err("max_age_days must be at least 1 when present".into());
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Kind of backup provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupProviderKind {
+    #[default]
+    Local,
+    GoogleDrive,
+}
+
+impl std::fmt::Display for BackupProviderKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Local => write!(f, "local"),
+            Self::GoogleDrive => write!(f, "google_drive"),
+        }
+    }
+}
+
+/// Google Drive provider configuration (no secrets here, only folder + ref).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoogleDriveConfig {
+    pub folder_id: String,
+    pub credential_ref: String,
+}
+
+impl GoogleDriveConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.folder_id.trim().is_empty() || self.folder_id.len() > 512 {
+            return Err("folder_id must be 1-512 chars".into());
+        }
+        if self.credential_ref.trim().is_empty()
+            || self.credential_ref.len() > 64
+            || !self
+                .credential_ref
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err("credential_ref must be 1-64 alphanumeric/_/-".into());
+        }
+        Ok(())
+    }
+}
+
+/// Global backup storage settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupStorageSettings {
+    pub provider: BackupProviderKind,
+    pub retention: BackupRetentionPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub google_drive: Option<GoogleDriveConfig>,
+}
+
+impl Default for BackupStorageSettings {
+    fn default() -> Self {
+        Self {
+            provider: BackupProviderKind::Local,
+            retention: BackupRetentionPolicy::default(),
+            google_drive: None,
+        }
+    }
+}
+
+/// Per-server override for backup settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerBackupPolicy {
+    #[serde(default)]
+    pub provider: BackupProviderKind,
+    #[serde(default)]
+    pub retention: BackupRetentionPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub google_drive: Option<GoogleDriveConfig>,
+}
+
+/// Provider-neutral backup metadata, persisted in panel.json.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredBackup {
+    pub id: String,
+    pub server_id: String,
+    pub provider: BackupProviderKind,
+    pub remote_id: String,
+    pub created_at: String,
+    pub size_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum_sha256: Option<String>,
+    #[serde(default)]
+    pub note: String,
+}
+
 /// A server as the panel stores it: identity plus the two guardian configs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerRecord {
@@ -59,6 +182,9 @@ pub struct ServerRecord {
     pub playit: Option<PlayitBinding>,
     /// RFC 3339 creation timestamp.
     pub created_at: String,
+    /// Optional per-server backup override. None means inherit global.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_policy: Option<ServerBackupPolicy>,
 }
 
 /// The entire persisted document.
@@ -70,6 +196,12 @@ pub struct PanelData {
     /// Every configured server.
     #[serde(default)]
     pub servers: Vec<ServerRecord>,
+    /// Global backup storage settings.
+    #[serde(default)]
+    pub backup_storage: BackupStorageSettings,
+    /// All successful backups across all servers and providers.
+    #[serde(default)]
+    pub backups: Vec<StoredBackup>,
 }
 
 /// Reads and writes [`PanelData`], serialising concurrent writers.
@@ -393,10 +525,12 @@ mod tests {
             policy: guardian::GuardianConfig::default(),
             playit: None,
             created_at: "2026-08-28T00:00:00Z".into(),
+            backup_policy: None,
         };
         let mut document = serde_json::to_value(PanelData {
             users: vec![],
             servers: vec![record],
+            ..Default::default()
         })
         .unwrap();
         document["servers"][0]
@@ -429,6 +563,7 @@ mod tests {
                 local_port: 25565,
             }),
             created_at: "2026-08-28T00:00:00Z".into(),
+            backup_policy: None,
         };
 
         store

@@ -253,6 +253,7 @@ mod tests {
             policy: GuardianConfig::default(),
             playit: None,
             created_at: "2026-08-28T00:00:00Z".into(),
+            backup_policy: None,
         };
         state
             .store
