@@ -50,8 +50,24 @@ export function Console({
     let retry: number | undefined;
     let attempt = 0;
 
-    const connect = () => {
-      const ws = openConsole(serverId);
+    const connect = async () => {
+      let ws: WebSocket;
+      try {
+        ws = await openConsole(serverId);
+      } catch {
+        if (closed) return;
+        attempt += 1;
+        if (attempt > MAX_RECONNECTS) {
+          setGaveUp(true);
+          return;
+        }
+        retry = window.setTimeout(connect, Math.min(1000 * 2 ** (attempt - 1), 30000));
+        return;
+      }
+      if (closed) {
+        ws.close();
+        return;
+      }
       socket.current = ws;
 
       ws.onopen = () => {
@@ -102,7 +118,7 @@ export function Console({
       };
     };
 
-    connect();
+    void connect();
     return () => {
       closed = true;
       if (retry) clearTimeout(retry);

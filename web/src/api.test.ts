@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, api, token } from "./api";
+import { describe, expect, it, vi } from "vitest";
+import { ApiError, api, openConsole, token } from "./api";
 
 /** Reply with `body` as JSON. */
 function jsonResponse(body: unknown, status = 200) {
@@ -17,22 +17,22 @@ function mockFetch(...responses: Response[]) {
 }
 
 describe("authentication", () => {
-  it("stores the token on login and sends it afterwards", async () => {
+  it("uses an HttpOnly cookie session and never exposes a bearer token to JavaScript", async () => {
     const fetchMock = mockFetch(
-      jsonResponse({ token: "abc123", user: { username: "admin", admin: true } }),
+      jsonResponse({ user: { username: "admin", admin: true } }),
       jsonResponse([]),
     );
 
     await api.login("admin", "hunter2hunter2");
-    expect(token()).toBe("abc123");
+    expect(token()).toBeNull();
 
     await api.servers();
-    const headers = fetchMock.mock.calls[1][1].headers as Headers;
-    expect(headers.get("Authorization")).toBe("Bearer abc123");
+    const init = fetchMock.mock.calls[1][1];
+    expect((init.headers as Headers).get("Authorization")).toBeNull();
+    expect(init.credentials).toBe("same-origin");
   });
 
   it("drops the session and announces it on a 401", async () => {
-    localStorage.setItem("mcpanel.token", "stale");
     mockFetch(jsonResponse({ error: "unauthorized" }, 401));
 
     const loggedOut = vi.fn();
@@ -55,10 +55,6 @@ describe("authentication", () => {
 });
 
 describe("playit", () => {
-  beforeEach(() => {
-    localStorage.setItem("mcpanel.token", "session-token");
-  });
-
   it("uses the authenticated claim and server tunnel endpoints", async () => {
     const fetchMock = mockFetch(
       jsonResponse({ claim_url: "https://playit.gg/claim/abc" }),
@@ -70,9 +66,8 @@ describe("playit", () => {
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/playit/claim");
     expect(fetchMock.mock.calls[0][1].method).toBe("POST");
-    expect((fetchMock.mock.calls[0][1].headers as Headers).get("Authorization")).toBe(
-      "Bearer session-token",
-    );
+    expect((fetchMock.mock.calls[0][1].headers as Headers).get("Authorization")).toBeNull();
+    expect(fetchMock.mock.calls[0][1].credentials).toBe("same-origin");
     expect(fetchMock.mock.calls[1][0]).toBe("/api/servers/server-1/playit");
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({});
   });
@@ -87,10 +82,6 @@ describe("playit", () => {
 });
 
 describe("downloads", () => {
-  beforeEach(() => {
-    localStorage.setItem("mcpanel.token", "session-token");
-  });
-
   it("fetches a ticket and never puts the session token in the URL", async () => {
     const fetchMock = mockFetch(jsonResponse({ ticket: "tkt-123" }));
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
@@ -100,10 +91,9 @@ describe("downloads", () => {
     const [ticketUrl, ticketInit] = fetchMock.mock.calls[0];
     expect(ticketUrl).toContain("/files/ticket");
     expect(ticketInit.method).toBe("POST");
-    // The ticket request authenticates by header, as every API call does.
-    expect((ticketInit.headers as Headers).get("Authorization")).toBe(
-      "Bearer session-token",
-    );
+    // The ticket request authenticates with the HttpOnly cookie.
+    expect((ticketInit.headers as Headers).get("Authorization")).toBeNull();
+    expect(ticketInit.credentials).toBe("same-origin");
 
     const navigated = click.mock.instances[0] as unknown as HTMLAnchorElement;
     expect(navigated.href).toContain("ticket=tkt-123");
@@ -122,11 +112,26 @@ describe("downloads", () => {
     expect(navigated.href).toContain("ticket=tkt-backup");
     expect(navigated.href).not.toContain("session-token");
   });
+
+  it("uses a separate short-lived ticket for the console handshake", async () => {
+    const fetchMock = mockFetch(jsonResponse({ ticket: "console-ticket" }));
+    const socket = {} as WebSocket;
+    const webSocket = vi.fn(() => socket);
+    vi.stubGlobal("WebSocket", webSocket);
+
+    await expect(openConsole("srv-1")).resolves.toBe(socket);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/servers/srv-1/ws/ticket");
+    expect(fetchMock.mock.calls[0][1].method).toBe("POST");
+    const url = (webSocket.mock.calls[0] as unknown as [string])[0];
+    expect(url).toContain("ticket=console-ticket");
+    expect(url).not.toContain("token=");
+    expect(url).not.toContain("session-token");
+  });
 });
 
 describe("uploads", () => {
   it("signs the operator out on a 401, like every other call", async () => {
-    localStorage.setItem("mcpanel.token", "stale");
     mockFetch(new Response("", { status: 401 }));
 
     const loggedOut = vi.fn();

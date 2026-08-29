@@ -428,12 +428,11 @@ function Settings({
     event.preventDefault();
     setBusy(true);
     try {
-      await api.updateServer(server.id, {
+      const update: Record<string, unknown> = {
         name: form.name,
         port: form.port,
         java_major: form.java_major,
         memory: { min_mb: form.min_mb, max_mb: form.max_mb },
-        jvm_args: form.jvm_args.split(/\s+/).filter(Boolean),
         eula_accepted: form.eula_accepted,
         policy: {
           ...server.policy,
@@ -442,7 +441,11 @@ function Settings({
           retry_delay_secs: form.retry_delay_secs,
           stop_timeout_secs: form.stop_timeout_secs,
         },
-      });
+      };
+      if (user.admin) {
+        update.jvm_args = form.jvm_args.split(/\s+/).filter(Boolean);
+      }
+      await api.updateServer(server.id, update);
       toast.success(t("settings.saved"));
       onSaved();
     } catch (e) {
@@ -511,15 +514,17 @@ function Settings({
               />
             </Field>
           </div>
-          <div class="sm:col-span-2">
-            <Field label={t("settings.extraFlags")} hint={t("settings.extraFlagsHint")}>
-              <Input
-                value={form.jvm_args}
-                placeholder="-XX:+UseG1GC -XX:MaxGCPauseMillis=200"
-                onInput={(e) => set({ jvm_args: (e.target as HTMLInputElement).value })}
-              />
-            </Field>
-          </div>
+          {user.admin && (
+            <div class="sm:col-span-2">
+              <Field label={t("settings.extraFlags")} hint={t("settings.extraFlagsHint")}>
+                <Input
+                  value={form.jvm_args}
+                  placeholder="-XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+                  onInput={(e) => set({ jvm_args: (e.target as HTMLInputElement).value })}
+                />
+              </Field>
+            </div>
+          )}
         </div>
 
         <label class="mt-4 flex items-center gap-2.5 text-sm text-fg-muted">

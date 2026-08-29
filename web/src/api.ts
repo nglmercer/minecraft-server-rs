@@ -15,16 +15,17 @@ import type {
   User,
 } from "./types";
 
-const TOKEN_KEY = "mcpanel.token";
-
-/** The bearer token, or null when logged out. */
+/** Session credentials are held in an HttpOnly cookie, never in JavaScript storage. */
 export function token(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
+  return null;
 }
 
-function setToken(value: string | null) {
-  if (value === null) localStorage.removeItem(TOKEN_KEY);
-  else localStorage.setItem(TOKEN_KEY, value);
+function csrfToken(): string | null {
+  const item = document.cookie
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith("mcpanel_csrf="));
+  return item?.slice("mcpanel_csrf=".length) ?? null;
 }
 
 /** An API call that came back with a non-2xx status. */
@@ -42,15 +43,20 @@ async function request<T>(
   init: RequestInit = {},
 ): Promise<T> {
   const headers = new Headers(init.headers);
-  const auth = token();
-  if (auth) headers.set("Authorization", `Bearer ${auth}`);
   if (init.body) headers.set("Content-Type", "application/json");
+  if (!["GET", "HEAD", "OPTIONS"].includes((init.method ?? "GET").toUpperCase())) {
+    const csrf = csrfToken();
+    if (csrf) headers.set("X-CSRF-Token", csrf);
+  }
 
-  const response = await fetch(`/api${path}`, { ...init, headers });
+  const response = await fetch(`/api${path}`, {
+    ...init,
+    headers,
+    credentials: "same-origin",
+  });
 
   if (response.status === 401) {
     // The session is gone; drop it so the shell renders the login screen.
-    setToken(null);
     window.dispatchEvent(new CustomEvent("mcpanel:logout"));
     throw new ApiError("session expired", 401);
   }
@@ -77,19 +83,17 @@ function startDownload(url: string) {
 }
 
 export const api = {
-  async login(username: string, password: string): Promise<User> {
-    const result = await request<{ token: string; user: User }>("/auth/login", {
-      method: "POST",
-      body: json({ username, password }),
-    });
-    setToken(result.token);
-    return result.user;
-  },
+ async login(username: string, password: string): Promise<User> {
+    const result = await request<{ user: User }>("/auth/login", {
+     method: "POST",
+     body: json({ username, password }),
+   });
+   return result.user;
+ },
 
-  async logout(): Promise<void> {
-    await request("/auth/logout", { method: "POST" }).catch(() => {});
-    setToken(null);
-  },
+ async logout(): Promise<void> {
+   await request("/auth/logout", { method: "POST" }).catch(() => {});
+ },
 
   me: () => request<User>("/auth/me"),
 
@@ -158,7 +162,10 @@ export const api = {
       body: json({ command }),
     }),
 
-  logs: (id: string) => request<ConsoleLine[]>(`/servers/${id}/logs`),
+ logs: (id: string) => request<ConsoleLine[]>(`/servers/${id}/logs`),
+
+  consoleTicket: (id: string) =>
+    request<{ ticket: string }>(`/servers/${id}/ws/ticket`, { method: "POST" }),
 
   reinstall: (id: string) =>
     request<{ ok: boolean }>(`/servers/${id}/reinstall`, { method: "POST" }),
@@ -214,20 +221,19 @@ export const api = {
     const body = new FormData();
     for (const file of files) body.append("file", file, file.name);
 
-    const headers = new Headers();
-    const auth = token();
-    if (auth) headers.set("Authorization", `Bearer ${auth}`);
+   const headers = new Headers();
+    const csrf = csrfToken();
+    if (csrf) headers.set("X-CSRF-Token", csrf);
 
     const response = await fetch(
-      `/api/servers/${id}/files/upload?path=${encodeURIComponent(path)}`,
-      { method: "POST", body, headers },
+     `/api/servers/${id}/files/upload?path=${encodeURIComponent(path)}`,
+      { method: "POST", body, headers, credentials: "same-origin" },
     );
 
     // Upload cannot go through `request` because the body is FormData, so the
     // expired-session handling has to be repeated rather than inherited.
     if (response.status === 401) {
-      setToken(null);
-      window.dispatchEvent(new CustomEvent("mcpanel:logout"));
+     window.dispatchEvent(new CustomEvent("mcpanel:logout"));
       throw new ApiError("session expired", 401);
     }
     if (!response.ok) {
@@ -310,14 +316,11 @@ export const api = {
   system: () => request<SystemStats>("/system"),
 };
 
-/**
- * Open the console socket for `id`.
- *
- * The token goes in the query string because browsers cannot set headers on a
- * WebSocket handshake.
- */
-export function openConsole(id: string): WebSocket {
-  const scheme = location.protocol === "https:" ? "wss" : "ws";
-  const auth = encodeURIComponent(token() ?? "");
-  return new WebSocket(`${scheme}://${location.host}/api/servers/${id}/ws?token=${auth}`);
+/** Open the console socket with a short-lived one-use ticket. */
+export async function openConsole(id: string): Promise<WebSocket> {
+  const { ticket } = await api.consoleTicket(id);
+ const scheme = location.protocol === "https:" ? "wss" : "ws";
+  return new WebSocket(
+    `${scheme}://${location.host}/api/servers/${id}/ws?ticket=${encodeURIComponent(ticket)}`,
+  );
 }

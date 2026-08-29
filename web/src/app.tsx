@@ -1,5 +1,5 @@
 import { useEffect, useState } from "preact/hooks";
-import { api, token } from "./api";
+import { api } from "./api";
 import { Button, Select } from "./components/ui";
 import * as Icon from "./components/icons";
 import { LANGUAGES, useI18n, type Language } from "./i18n";
@@ -78,11 +78,8 @@ export function App() {
   const [route, navigate] = useRoute();
 
   useEffect(() => {
-    // A stored token may have expired while the tab was closed; verify it once.
-    if (!token()) {
-      setReady(true);
-      return;
-    }
+    // The HttpOnly cookie is intentionally invisible to JavaScript, so verify
+    // the browser session directly on every page load.
     api
       .me()
       .then(setUser)

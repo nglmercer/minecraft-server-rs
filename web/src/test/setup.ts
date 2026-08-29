@@ -5,9 +5,9 @@ import { afterEach, beforeEach, vi } from "vitest";
 /**
  * A minimal in-memory `Storage`.
  *
- * jsdom does not expose `localStorage` in this configuration, and the panel
- * keeps its session token there. A deterministic shim is better than depending
- * on how a particular jsdom version decides to treat the test origin.
+ * jsdom does not expose `localStorage` in every test configuration. The panel
+ * only uses it for the language preference; authentication lives in an
+ * HttpOnly cookie and is deliberately inaccessible to this code.
  */
 function memoryStorage(): Storage {
   let entries = new Map<string, string>();
@@ -37,8 +37,8 @@ if (typeof globalThis.localStorage === "undefined") {
   });
 }
 
-// Each test starts from a clean DOM and an empty session, so one cannot leave a
-// token or a rendered dialog behind for the next.
+// Each test starts from a clean DOM and an empty preference store, so one test
+// cannot leave a rendered dialog or language choice behind for the next.
 beforeEach(() => {
   localStorage.clear();
 });
