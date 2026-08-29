@@ -84,7 +84,7 @@ async fn a_server_that_logs_done_becomes_online_and_stops_gracefully() {
     assert_eq!(snapshot.crashes, 0);
 
     guardian.stop().await.unwrap();
-    assert_eq!(guardian.status().await, ServerStatus::Offline);
+    await_status(&mut events, ServerStatus::Offline).await;
     assert!(guardian.snapshot().await.pid.is_none());
 
     // The graceful path must not be mistaken for a crash.
