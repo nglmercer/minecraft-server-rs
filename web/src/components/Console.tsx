@@ -24,9 +24,11 @@ function lineClass(line: ConsoleLine): string {
 export function Console({
   serverId,
   onStatus,
+  onProgress,
 }: {
   serverId: string;
   onStatus: (status: Status) => void;
+  onProgress?: (p: { stage: string; fraction: number | null } | null) => void;
 }) {
   const t = useT();
   const [lines, setLines] = useState<ConsoleLine[]>([]);
@@ -38,6 +40,7 @@ export function Console({
   const [gaveUp, setGaveUp] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [atBottom, setAtBottom] = useState(true);
+  const [progress, setProgress] = useState<{ stage: string; fraction: number | null } | null>(null);
 
   const socket = useRef<WebSocket | null>(null);
   const scroller = useRef<HTMLDivElement | null>(null);
@@ -103,7 +106,17 @@ export function Console({
             break;
           case "status":
             onStatus(message.status);
+            if (message.status !== "preparing") {
+              setProgress(null);
+              onProgress?.(null);
+            }
             break;
+          case "progress": {
+            const p = { stage: message.stage, fraction: message.fraction };
+            setProgress(p);
+            onProgress?.(p);
+            break;
+          }
           case "lagged":
             setLines((prev) => [
               ...prev,
@@ -205,6 +218,25 @@ export function Console({
           onClick={() => setExpanded((v) => !v)}
         />
       </div>
+
+      {progress && (
+        <div class="rounded-xl border border-sky-500/40 bg-sky-500/10 px-4 py-3">
+          <div class="flex items-center justify-between gap-3 text-sm text-sky-100">
+            <span class="truncate font-medium">{progress.stage}</span>
+            {progress.fraction !== null && (
+              <span class="shrink-0 tabular-nums">{Math.round(progress.fraction * 100)}%</span>
+            )}
+          </div>
+          {progress.fraction !== null && (
+            <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-sky-900">
+              <div
+                class="h-full bg-sky-400 transition-[width] duration-300"
+                style={{ width: `${Math.max(0, Math.min(1, progress.fraction)) * 100}%` }}
+              />
+            </div>
+          )}
+        </div>
+      )}
 
       <div class="relative min-h-0 flex-1 overflow-hidden rounded-xl bg-ink-950">
         <div

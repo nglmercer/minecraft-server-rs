@@ -375,6 +375,65 @@ impl Guardian {
         self.provision(Provision::IfNeeded).await
     }
 
+    /// Pre-download / install without launching, with status-machine handling.
+    ///
+    /// Like `reinstall` but uses `Provision::IfNeeded` so a second call is a
+    /// no-op when already installed. The server is moved to `Preparing` and
+    /// back to `Offline` so the UI can show progress.
+    pub async fn prefetch(self: &Arc<Self>) -> Result<ServerEnvironment> {
+        let task = {
+            let mut state = self.state.lock().await;
+            let current = state.status.unwrap_or(ServerStatus::Offline);
+            if state.shutting_down || current.is_running() || current == ServerStatus::Preparing {
+                return Err(Error::InvalidTransition {
+                    current: current.as_str(),
+                    action: "prepare",
+                });
+            }
+            state.status = Some(ServerStatus::Preparing);
+            state.intentional = false;
+            state.next_preparation_id = state.next_preparation_id.wrapping_add(1);
+            let preparation_id = state.next_preparation_id;
+            state.preparation_id = preparation_id;
+            let this = Arc::clone(self);
+            let task = tokio::spawn(async move {
+                let _resource_lock = this.lock_resources().await;
+                let result = this.provision(Provision::IfNeeded).await;
+                let changed = {
+                    let mut state = this.state.lock().await;
+                    if state.preparation_id == preparation_id {
+                        state.preparing = None;
+                        state.preparation_cancel = None;
+                        if state.status == Some(ServerStatus::Preparing) {
+                            state.status = Some(ServerStatus::Offline);
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                };
+                if changed {
+                    this.emit(ServerEvent::Status {
+                        status: ServerStatus::Offline,
+                    });
+                }
+                result
+            });
+            state.preparing = Some(task.abort_handle());
+            task
+        };
+        self.emit(ServerEvent::Status {
+            status: ServerStatus::Preparing,
+        });
+
+        match task.await {
+            Ok(result) => result,
+            Err(error) => Err(Error::Task(error.to_string())),
+        }
+    }
+
     async fn provision(self: &Arc<Self>, mode: Provision) -> Result<ServerEnvironment> {
         let config = self.config().await;
         let this = Arc::downgrade(self);

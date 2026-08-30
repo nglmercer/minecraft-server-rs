@@ -667,6 +667,26 @@ async fn reinstall(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+/// Pre-download Java and the server jar without starting, with progress events.
+///
+/// Uses `Provision::IfNeeded` so a second call is a no-op when already installed.
+/// Moves through `Preparing` -> `Offline` so the UI can show the same progress
+/// bar as a first start.
+async fn prepare_install(
+    State(state): State<Arc<AppState>>,
+    identity: Identity,
+    Path(id): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let _server_lock = state.server_mutation_lock.lock().await;
+    authorized(&state, &identity, &id).await?;
+
+    let guardian = state.guardian(&id).await?;
+    let installed = guardian.prefetch().await?;
+
+    tracing::info!(server = %id, jar = %installed.jar.display(), "prepared");
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 async fn logs(
     State(state): State<Arc<AppState>>,
     identity: Identity,
@@ -695,6 +715,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/{id}/power", post(power))
         .route("/{id}/command", post(command))
         .route("/{id}/reinstall", post(reinstall))
+        .route("/{id}/prepare", post(prepare_install))
         .route("/{id}/logs", get(logs))
 }
 

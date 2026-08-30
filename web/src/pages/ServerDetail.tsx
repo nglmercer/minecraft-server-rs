@@ -45,6 +45,7 @@ export function ServerDetail({
   const [playit, setPlayit] = useState<ServerPlayitView | null>(null);
   const [tab, setTab] = useState<Tab>("console");
   const [failed, setFailed] = useState<string | null>(null);
+  const [progress, setProgress] = useState<{ stage: string; fraction: number | null } | null>(null);
 
   async function refresh() {
     try {
@@ -69,6 +70,11 @@ export function ServerDetail({
 
   function onStatus(status: Status) {
     setServer((prev) => (prev ? { ...prev, status } : prev));
+    if (status !== "preparing") setProgress(null);
+  }
+
+  function onProgress(p: { stage: string; fraction: number | null } | null) {
+    setProgress(p);
   }
 
   async function power(action: "start" | "stop" | "restart" | "kill") {
@@ -242,7 +248,24 @@ export function ServerDetail({
 
       {!server.eula_accepted && <Banner kind="info">{t("server.eulaWarning")}</Banner>}
 
-      {server.status === "preparing" && <Banner kind="info">{t("server.preparing")}</Banner>}
+      {server.status === "preparing" && (
+        <div class="rounded-lg border border-sky-500/40 bg-sky-500/10 px-4 py-3">
+          <p class="text-sm font-medium text-sky-100">{progress?.stage ?? t("server.preparing")}</p>
+          {progress?.fraction !== null && progress?.fraction !== undefined && (
+            <div class="mt-2 flex items-center gap-3">
+              <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-sky-900">
+                <div
+                  class="h-full bg-sky-400 transition-[width] duration-300"
+                  style={{ width: `${Math.max(0, Math.min(1, progress.fraction ?? 0)) * 100}%` }}
+                />
+              </div>
+              <span class="shrink-0 text-xs tabular-nums text-sky-100">
+                {Math.round((progress?.fraction ?? 0) * 100)}%
+              </span>
+            </div>
+          )}
+        </div>
+      )}
 
       {tab === "console" && (
         <div class="grid gap-4 sm:grid-cols-3">
@@ -270,7 +293,7 @@ export function ServerDetail({
       )}
 
       <div class="flex min-h-0 flex-1 flex-col">
-        {tab === "console" && <Console serverId={id} onStatus={onStatus} />}
+        {tab === "console" && <Console serverId={id} onStatus={onStatus} onProgress={onProgress} />}
         {tab === "files" && <Files serverId={id} />}
         {tab === "plugins" && <Mods server={server} />}
         {tab === "backups" && <Backups serverId={id} status={server.status} />}
@@ -348,6 +371,19 @@ function Installed({ server, onChanged }: { server: Server; onChanged: () => voi
     }
   }
 
+  async function prepare() {
+    setBusy(true);
+    try {
+      await api.prepare(server.id);
+      toast.success(t("settings.updated"));
+      onChanged();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : t("errors.actionFailed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <Card title={t("settings.installSection")}>
       {server.installed ? (
@@ -384,7 +420,27 @@ function Installed({ server, onChanged }: { server: Server; onChanged: () => voi
         </div>
       )}
 
-      <div class="mt-4">
+      <div class="mt-4 flex flex-wrap gap-2">
+        {!server.installed && (
+          <Button
+            variant="primary"
+            disabled={busy || running}
+            title={running ? t("settings.mustStopToUpdate") : undefined}
+            onClick={prepare}
+          >
+            {busy ? t("settings.updating") : "Install"}
+          </Button>
+        )}
+        {server.needs_install && (
+          <Button
+            variant="primary"
+            disabled={busy || running}
+            title={running ? t("settings.mustStopToUpdate") : undefined}
+            onClick={prepare}
+          >
+            {busy ? t("settings.updating") : "Install"}
+          </Button>
+        )}
         <Button
           disabled={busy || running}
           title={running ? t("settings.mustStopToUpdate") : undefined}

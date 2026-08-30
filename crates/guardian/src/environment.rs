@@ -69,7 +69,7 @@ fn jdk_root(data_dir: &Path) -> PathBuf {
 pub async fn resolve_java(
     major: u32,
     data_dir: &Path,
-    mut on_progress: impl FnMut(String, Option<f32>) + Send + 'static,
+    on_progress: impl Fn(String, Option<f32>) + Send + Sync + Clone + 'static,
 ) -> Result<JavaInstallation> {
     if let Ok(installs) = java_path::discover() {
         if let Ok(found) = installs.select().major(major).current_arch().best() {
@@ -84,10 +84,28 @@ pub async fn resolve_java(
         .await
         .map_err(|e| Error::io(&dir, e))?;
 
+    let progress = on_progress.clone();
     JavaInstaller::adoptium()
         .version(major)
         .install_dir(&dir)
         .cache_dir(dir.join(".cache"))
+        .on_event(move |event| match event {
+            java_path::InstallEvent::Resolving => progress(format!("resolving Java {major}"), None),
+            java_path::InstallEvent::Downloading { downloaded, total } => {
+                let fraction = total
+                    .filter(|t| *t > 0)
+                    .map(|t| downloaded as f32 / t as f32);
+                progress(format!("downloading Java {major}"), fraction);
+            }
+            java_path::InstallEvent::Verifying => progress(format!("verifying Java {major}"), None),
+            java_path::InstallEvent::Extracting => {
+                progress(format!("extracting Java {major}"), None)
+            }
+            java_path::InstallEvent::Installed { .. } => {
+                progress(format!("installed Java {major}"), Some(1.0))
+            }
+            _ => {}
+        })
         .install()
         .await
         .map_err(|e| Error::JavaUnavailable(major, e.to_string()))
@@ -96,10 +114,34 @@ pub async fn resolve_java(
 /// Download the server jar for `config`, returning it and the build it resolved to.
 pub async fn resolve_jar(
     config: &ServerConfig,
-    mut on_progress: impl FnMut(String, Option<f32>) + Send + 'static,
+    on_progress: impl Fn(String, Option<f32>) + Send + Sync + Clone + 'static,
 ) -> Result<(PathBuf, String)> {
-    let client = MinecraftClient::builder().build()?;
+    // Stream download progress back to the guardian's Progress event.
+    let progress_for_download = on_progress.clone();
+    let core_for_progress = config.core.clone();
+    let version_for_progress = config.version.clone();
+    let client = MinecraftClient::builder()
+        .on_progress(std::sync::Arc::new(move |p: minecraft_core::Progress| {
+            let fraction = p
+                .total
+                .filter(|t| *t > 0)
+                .map(|t| p.downloaded as f32 / t as f32);
+            progress_for_download(
+                format!(
+                    "downloading {} {} ({}%)",
+                    core_for_progress,
+                    version_for_progress,
+                    fraction.map(|f| (f * 100.0).round() as u32).unwrap_or(0)
+                ),
+                fraction,
+            );
+        }))
+        .build()?;
 
+    on_progress(
+        format!("resolving {} {}", config.core, config.version),
+        None,
+    );
     let build = match &config.build {
         Some(id) => client.build(&config.core, &config.version, id).await?,
         None => client.latest_build(&config.core, &config.version).await?,

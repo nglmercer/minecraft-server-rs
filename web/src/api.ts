@@ -171,6 +171,9 @@ export const api = {
   reinstall: (id: string) =>
     request<{ ok: boolean }>(`/servers/${id}/reinstall`, { method: "POST" }),
 
+  prepare: (id: string) =>
+    request<{ ok: boolean }>(`/servers/${id}/prepare`, { method: "POST" }),
+
   files: (id: string, path = "") =>
     request<FileEntry[]>(`/servers/${id}/files?path=${encodeURIComponent(path)}`),
 
