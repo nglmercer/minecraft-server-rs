@@ -78,6 +78,13 @@ struct RunState {
     stdin: Option<ChildStdin>,
     pid: Option<u32>,
     started_at: Option<Instant>,
+    /// The configuration the live process was launched with.
+    ///
+    /// Editing a server updates the stored config immediately, but the JVM
+    /// keeps the heap and port it was started with until it is restarted.
+    /// Quota and port accounting has to reason about this value, not the
+    /// pending one, for as long as the process exists.
+    active: Option<ServerConfig>,
     /// Set by `stop`/`kill` so the supervisor knows the exit was requested.
     intentional: bool,
     /// Handle to the in-flight provisioning task, so it can be abandoned.
@@ -187,6 +194,15 @@ impl Guardian {
     /// The current configuration.
     pub async fn config(&self) -> ServerConfig {
         self.config.read().await.clone()
+    }
+
+    /// The configuration the running process was launched with, if one runs.
+    ///
+    /// Differs from [`Guardian::config`] whenever a server was edited while it
+    /// was up: the stored config is what the next start will use, this is what
+    /// the live JVM actually reserved.
+    pub async fn active_config(&self) -> Option<ServerConfig> {
+        self.state.lock().await.active.clone()
     }
 
     /// Replace the configuration. Takes effect on the next start.
@@ -643,6 +659,7 @@ impl Guardian {
             state.started_at = Some(Instant::now());
             state.intentional = false;
             state.child = Some(child);
+            state.active = Some(config.clone());
             state.status = Some(ServerStatus::Starting);
             state.generation
         };
@@ -657,18 +674,21 @@ impl Guardian {
         ))
         .await;
 
+        // Readiness is judged with the core this process was launched with. A
+        // config edit while it runs changes what the next start will be, and
+        // must not change how the current process's log lines are read.
         if let Some(out) = stdout {
-            self.spawn_reader(out, Stream::Stdout);
+            self.spawn_reader(out, Stream::Stdout, config.core.clone(), generation);
         }
         if let Some(err) = stderr {
-            self.spawn_reader(err, Stream::Stderr);
+            self.spawn_reader(err, Stream::Stderr, config.core.clone(), generation);
         }
 
         self.spawn_supervisor(generation);
         Ok(())
     }
 
-    fn spawn_reader<R>(self: &Arc<Self>, reader: R, stream: Stream)
+    fn spawn_reader<R>(self: &Arc<Self>, reader: R, stream: Stream, core: String, generation: u64)
     where
         R: tokio::io::AsyncRead + Unpin + Send + 'static,
     {
@@ -680,15 +700,19 @@ impl Guardian {
                     return;
                 };
 
-                // Core-aware readiness detection; read core each iteration in case config changed.
-                let core = guardian.config().await.core.clone();
-                if stream == Stream::Stdout
-                    && line_means_online(&core, &line)
-                    && guardian.status().await == ServerStatus::Starting
-                {
-                    guardian.set_status(ServerStatus::Online).await;
-                    // A clean start invalidates the crash streak.
-                    guardian.crashes.store(0, Ordering::Relaxed);
+                if stream == Stream::Stdout && line_means_online(&core, &line) {
+                    // A drained pipe can outlive its process, so the promotion
+                    // is tied to the generation that produced the line rather
+                    // than to whatever is starting now.
+                    let state = guardian.state.lock().await;
+                    let ready = state.generation == generation
+                        && state.status == Some(ServerStatus::Starting);
+                    drop(state);
+                    if ready {
+                        guardian.set_status(ServerStatus::Online).await;
+                        // A clean start invalidates the crash streak.
+                        guardian.crashes.store(0, Ordering::Relaxed);
+                    }
                 }
 
                 guardian.push_line(stream, line).await;
@@ -733,6 +757,8 @@ impl Guardian {
                     state.stdin = None;
                     state.pid = None;
                     state.started_at = None;
+                    // The heap and port this process held are free again.
+                    state.active = None;
                 }
 
                 if intentional {

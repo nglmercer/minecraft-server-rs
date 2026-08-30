@@ -266,6 +266,7 @@ export const es: Dictionary = {
     installedOn: "Instalado el {date}",
     notInstalled: "Aún no hay nada instalado. Se descarga en el primer arranque.",
     needsInstall: "El próximo arranque descargará un artefacto nuevo, porque la configuración ya no coincide con lo instalado.",
+    pendingRestart: "El servidor en marcha sigue usando la configuración con la que arrancó. Reinícialo para aplicar los cambios guardados.",
     pinned: "Reiniciar nunca cambia la build. Usa Actualizar para tomar una nueva de forma deliberada.",
     update: "Actualizar / reinstalar",
     updating: "Descargando…",

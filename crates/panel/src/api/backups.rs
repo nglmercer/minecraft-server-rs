@@ -367,6 +367,84 @@ async fn create(
     Ok(Json(stored))
 }
 
+/// Removes staging artifacts when a restore leaves its scope, however it left.
+///
+/// A restore creates a downloaded archive and the directory it is handed to;
+/// both are scratch space, and an early return on checksum mismatch, quota, or
+/// a malformed archive must not leave them filling the panel's disk.
+struct StagingArtifacts {
+    paths: Vec<std::path::PathBuf>,
+}
+
+impl StagingArtifacts {
+    fn new() -> Self {
+        Self { paths: Vec::new() }
+    }
+
+    fn track(&mut self, path: std::path::PathBuf) -> std::path::PathBuf {
+        self.paths.push(path.clone());
+        path
+    }
+}
+
+impl Drop for StagingArtifacts {
+    fn drop(&mut self) {
+        for path in self.paths.drain(..) {
+            // Synchronous removal: the paths are local scratch files, and a
+            // Drop cannot await. Failures are not actionable here.
+            if path.is_dir() {
+                let _ = std::fs::remove_dir_all(&path);
+            } else {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+}
+
+/// Copy a provider's download into `path`, refusing to exceed `ceiling` bytes.
+///
+/// The provider is remote and its stream is untrusted: without a counter a
+/// malformed or hostile response fills the panel's disk long before the
+/// archive's own extraction limits are consulted.
+async fn download_bounded(
+    stream: &mut crate::backups::provider::BackupStream,
+    path: &std::path::Path,
+    ceiling: u64,
+) -> ApiResult<u64> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut file = tokio::fs::File::create(path)
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
+    let mut buffer = vec![0_u8; 64 * 1024];
+    let mut written = 0_u64;
+    loop {
+        let read = stream
+            .read(&mut buffer)
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
+        if read == 0 {
+            break;
+        }
+        written = written.saturating_add(read as u64);
+        if written > ceiling {
+            return Err(ApiError::BadRequest(format!(
+                "backup download exceeds the {ceiling} byte limit"
+            )));
+        }
+        file.write_all(&buffer[..read])
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
+    }
+    file.flush()
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
+    file.sync_all()
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
+    Ok(written)
+}
+
 async fn restore(
     State(state): State<Arc<AppState>>,
     identity: Identity,
@@ -394,30 +472,55 @@ async fn restore(
     let Some(stored) = stored else {
         return Err(ApiError::NotFound("backup".into()));
     };
+
+    // The recorded size is what this panel wrote; anything larger coming back
+    // is corruption or a hostile provider, so it bounds the transfer. Records
+    // written before sizes were tracked fall back to the configured ceiling.
+    let ceiling = if stored.size_bytes > 0 {
+        stored.size_bytes.min(state.limits.max_backup_archive_bytes)
+    } else {
+        state.limits.max_backup_archive_bytes
+    };
+    if stored.size_bytes > state.limits.max_backup_archive_bytes {
+        return Err(ApiError::BadRequest(format!(
+            "backup is larger than the {} byte restore limit",
+            state.limits.max_backup_archive_bytes
+        )));
+    }
+
     let provider = crate::backups::provider_for_stored(&state, &stored)
         .await
         .map_err(|e| ApiError::Internal(e.into()))?;
-    let tmp_path = state
-        .staging_dir()
-        .join(format!(".restore-{}-{}.tar.gz", id, backup));
     crate::state::secure_directory(&state.staging_dir())
         .await
         .map_err(ApiError::Internal)?;
+
+    // A unique suffix keeps a retry, or a restore of another server, from
+    // adopting a half-written archive left by an earlier attempt.
+    let unique = uuid::Uuid::new_v4().simple().to_string();
+    let mut artifacts = StagingArtifacts::new();
+    let tmp_backup_dir = artifacts.track(
+        state
+            .staging_dir()
+            .join(format!(".restore-dir-{}-{}", id, unique)),
+    );
+    tokio::fs::create_dir_all(&tmp_backup_dir)
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
+    let archive_path = tmp_backup_dir.join(format!("{backup}.tar.gz"));
+
     let mut stream = provider.download(&id, &backup).await?;
-    let mut file = tokio::fs::File::create(&tmp_path)
-        .await
-        .map_err(|e| ApiError::Internal(e.into()))?;
-    tokio::io::copy(&mut stream, &mut file)
-        .await
-        .map_err(|e| ApiError::Internal(e.into()))?;
-    file.sync_all()
-        .await
-        .map_err(|e| ApiError::Internal(e.into()))?;
-    drop(file);
+    let downloaded = download_bounded(&mut stream, &archive_path, ceiling).await?;
+    if stored.size_bytes > 0 && downloaded != stored.size_bytes {
+        return Err(ApiError::Internal(anyhow::anyhow!(
+            "backup download size does not match the recorded size"
+        )));
+    }
+
     if let Some(expected) = &stored.checksum_sha256 {
         use sha2::{Digest, Sha256};
         use tokio::io::AsyncReadExt;
-        let mut f = tokio::fs::File::open(&tmp_path)
+        let mut f = tokio::fs::File::open(&archive_path)
             .await
             .map_err(|e| ApiError::Internal(e.into()))?;
         let mut hasher = Sha256::new();
@@ -434,20 +537,10 @@ async fn restore(
         }
         let actual = format!("{:x}", hasher.finalize());
         if &actual != expected {
-            let _ = tokio::fs::remove_file(&tmp_path).await;
-            return Err(ApiError::Internal(anyhow::anyhow!("checksum mismatch")))?;
+            return Err(ApiError::Internal(anyhow::anyhow!("checksum mismatch")));
         }
     }
-    let tmp_backup_dir = state
-        .staging_dir()
-        .join(format!(".restore-dir-{}-{}", id, backup));
-    tokio::fs::create_dir_all(&tmp_backup_dir)
-        .await
-        .map_err(|e| ApiError::Internal(e.into()))?;
-    let dest_archive = tmp_backup_dir.join(format!("{backup}.tar.gz"));
-    tokio::fs::copy(&tmp_path, &dest_archive)
-        .await
-        .map_err(|e| ApiError::Internal(e.into()))?;
+
     guardian::backup::restore_with_limits_and_quota(
         &tmp_backup_dir,
         &backup,
@@ -457,8 +550,6 @@ async fn restore(
     )
     .await
     .map_err(|e| ApiError::Internal(e.into()))?;
-    let _ = tokio::fs::remove_file(&tmp_path).await;
-    let _ = tokio::fs::remove_dir_all(&tmp_backup_dir).await;
     tracing::info!(server = %id, backup = %backup, "backup restored");
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -641,4 +732,51 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/{id}/backups/{backup}/restore", post(restore))
         .route("/{id}/backups/{backup}/download", get(download))
         .route("/{id}/backups/{backup}/ticket", post(download_ticket))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stream_of(bytes: Vec<u8>) -> crate::backups::provider::BackupStream {
+        Box::pin(tokio::io::BufReader::new(std::io::Cursor::new(bytes)))
+    }
+
+    #[tokio::test]
+    async fn a_download_stops_at_the_ceiling_instead_of_filling_the_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("archive.tar.gz");
+
+        let mut stream = stream_of(vec![b'x'; 1024]);
+        let written = download_bounded(&mut stream, &path, 1024).await.unwrap();
+        assert_eq!(written, 1024);
+
+        // A provider that hands back more than the record says is refused
+        // before extraction limits would ever be consulted.
+        let mut oversized = stream_of(vec![b'x'; 4096]);
+        let error = download_bounded(&mut oversized, &path, 1024)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ApiError::BadRequest(_)));
+        assert!(std::fs::metadata(&path).unwrap().len() <= 1024 + 64 * 1024);
+    }
+
+    #[test]
+    fn staging_artifacts_are_removed_when_a_restore_returns_early() {
+        let tmp = tempfile::tempdir().unwrap();
+        let directory = tmp.path().join("restore-dir");
+        let file = tmp.path().join("archive.tar.gz");
+        std::fs::create_dir_all(directory.join("nested")).unwrap();
+        std::fs::write(directory.join("nested/inner"), b"staged").unwrap();
+        std::fs::write(&file, b"downloaded").unwrap();
+
+        {
+            let mut artifacts = StagingArtifacts::new();
+            artifacts.track(directory.clone());
+            artifacts.track(file.clone());
+        }
+
+        assert!(!directory.exists());
+        assert!(!file.exists());
+    }
 }

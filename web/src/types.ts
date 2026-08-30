@@ -113,6 +113,8 @@ export interface Server {
   disk_bytes: number;
   /** Panel-owned Playit association, when configured. */
   playit: PlayitBinding | null;
+  /** True when the running process was launched with a different configuration. */
+  pending_restart: boolean;
 }
 
 export interface ProcessMetrics {

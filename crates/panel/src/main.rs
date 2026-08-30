@@ -140,6 +140,15 @@ struct Args {
     )]
     max_backup_disk_bytes: u64,
 
+    /// Maximum compressed bytes accepted from one backup download during a
+    /// restore, before the archive is extracted.
+    #[arg(
+        long,
+        default_value_t = limits::DEFAULT_MAX_BACKUP_ARCHIVE_BYTES,
+        env = "MCPANEL_MAX_BACKUP_ARCHIVE_BYTES"
+    )]
+    max_backup_archive_bytes: u64,
+
     /// Maximum aggregate configured Java heap, in MiB. Defaults to 75% of
     /// detected host memory and must not exceed that detected budget.
     #[arg(long, env = "MCPANEL_MAX_SERVER_MEMORY_MB")]
@@ -187,6 +196,7 @@ async fn main() -> Result<()> {
         max_extracted_file_bytes: args.max_extracted_file_bytes,
         max_server_disk_bytes: args.max_server_disk_bytes,
         max_backup_disk_bytes: args.max_backup_disk_bytes,
+        max_backup_archive_bytes: args.max_backup_archive_bytes,
         max_server_memory_mb,
     };
     limits.validate()?;

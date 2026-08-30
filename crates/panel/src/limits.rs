@@ -25,6 +25,11 @@ pub const DEFAULT_MAX_ARCHIVE_ENTRIES: usize = 10_000;
 pub const DEFAULT_MAX_SERVER_DISK_BYTES: u64 = 50 * 1024 * 1024 * 1024;
 /// Default quota for retained compressed backups of one server.
 pub const DEFAULT_MAX_BACKUP_DISK_BYTES: u64 = 50 * 1024 * 1024 * 1024;
+/// Default ceiling on the compressed bytes accepted from one backup download.
+///
+/// A restore streams an archive a remote provider hands back, so the transfer
+/// is bounded before extraction limits get a chance to apply.
+pub const DEFAULT_MAX_BACKUP_ARCHIVE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 /// Fallback host-level heap budget used only when the operating system does not
 /// report physical memory.  A normal installation derives this from 75% of the
 /// detected host memory at startup.
@@ -56,6 +61,7 @@ pub struct ResourceLimits {
     pub max_extracted_file_bytes: u64,
     pub max_server_disk_bytes: u64,
     pub max_backup_disk_bytes: u64,
+    pub max_backup_archive_bytes: u64,
     pub max_server_memory_mb: u32,
 }
 
@@ -69,6 +75,7 @@ impl Default for ResourceLimits {
             max_extracted_file_bytes: DEFAULT_MAX_EXTRACTED_FILE_BYTES,
             max_server_disk_bytes: DEFAULT_MAX_SERVER_DISK_BYTES,
             max_backup_disk_bytes: DEFAULT_MAX_BACKUP_DISK_BYTES,
+            max_backup_archive_bytes: DEFAULT_MAX_BACKUP_ARCHIVE_BYTES,
             max_server_memory_mb: host_memory_budget_mb(),
         }
     }
@@ -98,6 +105,10 @@ impl ResourceLimits {
         anyhow::ensure!(
             self.max_backup_disk_bytes > 0,
             "backup disk quota must be positive"
+        );
+        anyhow::ensure!(
+            self.max_backup_archive_bytes > 0,
+            "backup archive download limit must be positive"
         );
         anyhow::ensure!(
             self.max_server_memory_mb > 0,

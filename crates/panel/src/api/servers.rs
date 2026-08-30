@@ -40,6 +40,19 @@ pub struct ServerView {
     disk_bytes: u64,
     /// The panel-owned Playit association, when one exists.
     playit: Option<crate::store::PlayitBinding>,
+    /// Whether the running process was launched with a different configuration
+    /// than the one stored, so the edit only takes effect on the next start.
+    pending_restart: bool,
+}
+
+/// Whether a live process would have to restart to honour `stored`.
+fn differs_at_launch(running: &ServerConfig, stored: &ServerConfig) -> bool {
+    running.memory.min_mb != stored.memory.min_mb
+        || running.memory.max_mb != stored.memory.max_mb
+        || running.port != stored.port
+        || running.jvm_args != stored.jvm_args
+        || running.server_args != stored.server_args
+        || running.artifact_key() != stored.artifact_key()
 }
 
 async fn view(
@@ -52,6 +65,10 @@ async fn view(
     let metrics = live.pid.and_then(|pid| state.metrics.of(pid));
 
     let disk_bytes = state.metrics.disk_usage(&record.config.directory).await;
+    let pending_restart = guardian
+        .active_config()
+        .await
+        .is_some_and(|running| differs_at_launch(&running, &record.config));
     let installed = guardian.installation().await;
     let needs_install = installed
         .as_ref()
@@ -84,6 +101,7 @@ async fn view(
         needs_install,
         disk_bytes,
         playit: record.playit.clone(),
+        pending_restart,
     })
 }
 
@@ -166,8 +184,43 @@ fn validate_record_with_max(max_memory_mb: u32, record: &ServerRecord) -> ApiRes
     Ok(())
 }
 
+/// Launch configurations of the servers whose JVMs are still alive, by id.
+type ActiveConfigs = std::collections::HashMap<String, ServerConfig>;
+
+/// Whether `port` is already spoken for by a server other than `excluding`.
+///
+/// A running server holds the port it was launched with even after its stored
+/// config has been pointed somewhere else, so both values are reserved until
+/// the process is restarted.
+fn port_is_taken(
+    servers: &[ServerRecord],
+    active: &ActiveConfigs,
+    port: u16,
+    excluding: Option<&str>,
+) -> bool {
+    servers.iter().any(|server| {
+        if excluding == Some(server.id.as_str()) {
+            return false;
+        }
+        server.config.port == port
+            || active
+                .get(&server.id)
+                .is_some_and(|running| running.port == port)
+    })
+}
+
+/// The heap a server occupies right now: the larger of stored and running.
+fn reserved_memory_mb(id: &str, configured: u32, active: &ActiveConfigs) -> u64 {
+    let running = active
+        .get(id)
+        .map(|config| config.memory.max_mb)
+        .unwrap_or(0);
+    configured.max(running) as u64
+}
+
 fn validate_aggregate_memory(
     servers: &[ServerRecord],
+    active: &ActiveConfigs,
     replacing: Option<(&str, u32)>,
     additional: Option<u32>,
     max_memory_mb: u32,
@@ -178,12 +231,18 @@ fn validate_aggregate_memory(
             continue;
         }
         total = total
-            .checked_add(server.config.memory.max_mb as u64)
+            .checked_add(reserved_memory_mb(
+                &server.id,
+                server.config.memory.max_mb,
+                active,
+            ))
             .ok_or_else(|| ApiError::Conflict("aggregate server memory quota exceeded".into()))?;
     }
-    if let Some((_, memory)) = replacing {
+    if let Some((id, memory)) = replacing {
+        // Lowering a running server's heap does not hand memory back: the JVM
+        // keeps the maximum it was started with until it is restarted.
         total = total
-            .checked_add(memory as u64)
+            .checked_add(reserved_memory_mb(id, memory, active))
             .ok_or_else(|| ApiError::Conflict("aggregate server memory quota exceeded".into()))?;
     }
     if let Some(memory) = additional {
@@ -237,15 +296,12 @@ async fn create(
         .map_err(ApiError::Internal)?;
 
     let max_memory_mb = state.limits.max_server_memory_mb;
+    let active = state.active_configs().await;
     // Use a guard-style cleanup: any failure before commit removes the provisional directory.
     let write = state
         .store
         .try_update(|data| -> ApiResult<()> {
-            if data
-                .servers
-                .iter()
-                .any(|server| server.config.port == record.config.port)
-            {
+            if port_is_taken(data.servers.as_slice(), &active, record.config.port, None) {
                 return Err(ApiError::Conflict(format!(
                     "port {} is already assigned",
                     record.config.port
@@ -253,6 +309,7 @@ async fn create(
             }
             validate_aggregate_memory(
                 data.servers.as_slice(),
+                &active,
                 None,
                 Some(record.config.memory.max_mb),
                 max_memory_mb,
@@ -319,6 +376,7 @@ async fn update(
     let guardian = state.guardian(&id).await?;
     let _resource_lock = guardian.lock_resources().await;
     let max_memory_mb = state.limits.max_server_memory_mb;
+    let active = state.active_configs().await;
     let server_id = id.clone();
     let record = state
         .store
@@ -347,11 +405,7 @@ async fn update(
                 next.config.memory = memory;
             }
             if let Some(port) = body.port {
-                if data
-                    .servers
-                    .iter()
-                    .any(|server| server.id != next.id && server.config.port == port)
-                {
+                if port_is_taken(data.servers.as_slice(), &active, port, Some(&next.id)) {
                     return Err(ApiError::Conflict(format!(
                         "port {port} is already assigned"
                     )));
@@ -382,6 +436,7 @@ async fn update(
             validate_record_with_max(max_memory_mb, &next)?;
             validate_aggregate_memory(
                 data.servers.as_slice(),
+                &active,
                 Some((&next.id, next.config.memory.max_mb)),
                 None,
                 max_memory_mb,
@@ -718,5 +773,77 @@ mod tests {
     #[tokio::test]
     async fn api_kill_can_cancel_preparation_behind_a_resource_lock() {
         power_cancels_preparation(PowerAction::Kill).await;
+    }
+
+    fn record(id: &str, port: u16, max_mb: u32) -> ServerRecord {
+        let mut config = ServerConfig::paper(std::path::PathBuf::from(id), "1.21.8");
+        config.port = port;
+        config.memory.max_mb = max_mb;
+        config.memory.min_mb = max_mb.min(512);
+        ServerRecord {
+            id: id.into(),
+            name: id.into(),
+            config,
+            policy: GuardianConfig::default(),
+            playit: None,
+            created_at: "2026-08-29T00:00:00Z".into(),
+            backup_policy: None,
+        }
+    }
+
+    #[test]
+    fn a_running_server_keeps_reserving_the_port_it_was_launched_with() {
+        let servers = vec![record("a", 25566, 1024)];
+        // "a" was started on 25565 and re-pointed at 25566 while running.
+        let mut active = ActiveConfigs::new();
+        active.insert("a".into(), record("a", 25565, 1024).config);
+
+        assert!(port_is_taken(&servers, &active, 25565, None));
+        assert!(port_is_taken(&servers, &active, 25566, None));
+        // The server that holds both ports is not in conflict with itself.
+        assert!(!port_is_taken(&servers, &active, 25565, Some("a")));
+        assert!(!port_is_taken(&servers, &active, 25567, None));
+    }
+
+    #[test]
+    fn lowering_a_running_heap_does_not_free_aggregate_memory() {
+        let servers = vec![record("a", 25565, 8192)];
+        let mut active = ActiveConfigs::new();
+        active.insert("a".into(), record("a", 25565, 8192).config);
+
+        // Shrinking the stored heap to 1 GiB must not let another 7 GiB server
+        // fit an 8 GiB budget while the old JVM can still reach 8 GiB.
+        validate_aggregate_memory(&servers, &active, Some(("a", 1024)), None, 8192).unwrap();
+        let error =
+            validate_aggregate_memory(&servers, &active, Some(("a", 1024)), Some(7168), 8192)
+                .unwrap_err();
+        assert!(matches!(error, ApiError::Conflict(_)));
+
+        // With nothing running, the reduced configuration frees the budget.
+        let idle = ActiveConfigs::new();
+        validate_aggregate_memory(&servers, &idle, Some(("a", 1024)), Some(7168), 8192).unwrap();
+    }
+
+    #[test]
+    fn raising_a_stopped_servers_heap_still_counts_against_the_budget() {
+        let servers = vec![record("a", 25565, 1024), record("b", 25566, 1024)];
+        let active = ActiveConfigs::new();
+        let error = validate_aggregate_memory(&servers, &active, Some(("a", 8192)), None, 4096)
+            .unwrap_err();
+        assert!(matches!(error, ApiError::Conflict(_)));
+    }
+
+    #[test]
+    fn a_launch_config_that_matches_the_record_is_not_pending_restart() {
+        let stored = record("a", 25565, 2048);
+        assert!(!differs_at_launch(&stored.config, &stored.config));
+
+        let mut edited = stored.config.clone();
+        edited.memory.max_mb = 4096;
+        assert!(differs_at_launch(&stored.config, &edited));
+
+        let mut moved = stored.config.clone();
+        moved.port = 25566;
+        assert!(differs_at_launch(&stored.config, &moved));
     }
 }

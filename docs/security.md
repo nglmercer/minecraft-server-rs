@@ -61,7 +61,8 @@ Session credentials are held in memory and browser sessions use an `HttpOnly` co
 
 ## Resource limits
 
-Uploads default to 256 MiB. Archive extraction defaults to 10,000 entries, 1 GiB expanded output, and 256 MiB per file. Each server and its retained backups have configurable 50 GiB quotas by default. Change these with `--max-upload-bytes`, `--max-extracted-bytes`, `--max-archive-entries`, `--max-extracted-file-bytes`, `--max-server-disk-bytes`, and `--max-backup-disk-bytes`; limits apply while bytes are being written, not just to archive metadata. See [Operations — Backups & limits](operations.md).
+Uploads default to 256 MiB. Archive extraction defaults to 10,000 entries, 1 GiB expanded output, and 256 MiB per file. Each server and its retained backups have configurable 50 GiB quotas by default. Change these with `--max-upload-bytes`, `--max-extracted-bytes`, `--max-archive-entries`, `--max-extracted-file-bytes`, `--max-server-disk-bytes`, `--max-backup-disk-bytes`, and
+`--max-backup-archive-bytes`; limits apply while bytes are being written, not just to archive metadata. See [Operations — Backups & limits](operations.md).
 
 ## Related
 

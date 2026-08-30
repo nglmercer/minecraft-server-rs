@@ -11,7 +11,6 @@ use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde::{Deserialize, Serialize};
-use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
@@ -310,10 +309,18 @@ pub async fn restore_with_limits(
 
 /// Extract a backup using explicit archive and server-disk limits.
 ///
+/// The restore is all-or-nothing. Every archive entry is first expanded into a
+/// staging directory inside the server folder; only once the whole archive has
+/// been read, validated and quota-checked are the staged files moved into
+/// place. A failure during the move phase rolls the already-moved files back
+/// from the originals it displaced, so a failed restore leaves the server tree
+/// as it was rather than a mixture of old and restored files.
+///
 /// The quota is evaluated against the resulting server tree. Replacing an
 /// existing regular file subtracts its current size before the restored bytes
 /// are added, so a smaller replacement can free space while a larger one
-/// consumes it.
+/// consumes it. Staging means the transient peak usage is higher than that
+/// projection, because the old and new copies of a file briefly coexist.
 pub async fn restore_with_limits_and_quota(
     backup_dir: &Path,
     id: &str,
@@ -347,120 +354,273 @@ pub async fn restore_with_limits_and_quota(
             Err(error) => return Err(Error::io(archive_root.join(&archive_name), error)),
         };
         let target_fs = ScopedFs::open(&target).map_err(|e| Error::io(&target, e))?;
-        let mut server_usage = target_fs
-            .directory_size(".")
-            .map_err(|e| Error::io(&target, e))?;
-        let mut tar = tar::Archive::new(GzDecoder::new(file));
-        let mut entries = 0_usize;
-        let mut total_bytes = 0_u64;
 
-        for entry in tar.entries().map_err(Error::PlainIo)? {
-            let mut entry = entry.map_err(Error::PlainIo)?;
-            let path = entry.path().map_err(Error::PlainIo)?.into_owned();
+        // Staging lives inside the server directory so that moving a staged
+        // file into place is a same-filesystem rename, which cannot fail
+        // half-way through a file's contents.
+        let staging: PathBuf = PathBuf::from(format!(
+            "{}{}",
+            RESTORE_STAGING_PREFIX,
+            Uuid::new_v4().simple()
+        ));
+        let staged_tree = staging.join("new");
+        let displaced_tree = staging.join("old");
+        target_fs
+            .create_dir_all(&staged_tree)
+            .map_err(|e| Error::io(&staged_tree, e))?;
+        target_fs
+            .create_dir_all(&displaced_tree)
+            .map_err(|e| Error::io(&displaced_tree, e))?;
 
-            // An archive is untrusted input: a crafted member path must not be
-            // able to write outside the server directory. `./` is harmless and
-            // is what `tar -C dir .` emits for every entry.
-            if !safe_member(&path) {
-                return Err(Error::UnsafeArchiveEntry(path.display().to_string()));
-            }
+        let outcome = expand_and_commit(
+            &target_fs,
+            &target,
+            file,
+            limits,
+            max_server_disk_bytes,
+            &staged_tree,
+            &displaced_tree,
+        );
 
-            entries = entries.saturating_add(1);
-            if entries > limits.max_entries {
-                return Err(Error::ArchiveLimit("too many entries".into()));
-            }
-
-            let entry_type = entry.header().entry_type();
-            if entry_type.is_symlink() || entry_type.is_hard_link() {
-                // Links are not needed in a panel backup and are rejected
-                // completely. Never let tar::unpack resolve a link target.
-                return Err(Error::UnsafeArchiveEntry(path.display().to_string()));
-            }
-            let relative = normalise_member(&path)?;
-            if entry_type.is_dir() {
-                target_fs
-                    .create_dir_all(&relative)
-                    .map_err(|e| Error::io(&path, e))?;
-                continue;
-            }
-            if !entry_type.is_file() {
-                return Err(Error::UnsafeArchiveEntry(path.display().to_string()));
-            }
-            let declared = entry.size();
-            if declared > limits.max_file_bytes {
-                return Err(Error::ArchiveLimit("file is too large".into()));
-            }
-            if relative.as_os_str().is_empty() {
-                return Err(Error::UnsafeArchiveEntry(path.display().to_string()));
-            }
-            if let Some(parent) = relative.parent() {
-                target_fs
-                    .create_dir_all(parent)
-                    .map_err(|e| Error::io(parent, e))?;
-            }
-            let replaced_size = target_fs
-                .metadata(&relative)
-                .ok()
-                .filter(|metadata| metadata.is_file)
-                .map(|metadata| metadata.len)
-                .unwrap_or(0);
-            let temporary: OsString =
-                format!(".mcpanel-restore-{}", Uuid::new_v4().simple()).into();
-            let temporary_path = relative
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join(&temporary);
-            let mut output = target_fs
-                .create_new_file(&temporary_path)
-                .map_err(|e| Error::io(&temporary_path, e))?;
-            let copied = (|| -> Result<u64> {
-                let copied = copy_limited(
-                    &mut entry,
-                    &mut output,
-                    total_bytes,
-                    limits.max_total_bytes,
-                    limits.max_file_bytes,
-                    RestoreQuota {
-                        current_usage: server_usage,
-                        replaced_size,
-                        max_server_disk_bytes,
-                    },
-                )?;
-                output.sync_all().map_err(Error::PlainIo)?;
-                Ok(copied)
-            })();
-            drop(output);
-            let copied = match copied {
-                Ok(copied) => copied,
-                Err(error) => {
-                    let _ = target_fs.remove(&temporary_path);
-                    return Err(error);
-                }
-            };
-            let next_total = total_bytes
-                .checked_add(copied)
-                .ok_or_else(|| Error::ArchiveLimit("expanded size overflow".into()))?;
-            let next_usage = server_usage
-                .checked_sub(replaced_size)
-                .and_then(|usage| usage.checked_add(copied))
-                .ok_or(Error::ServerDiskQuotaExceeded)?;
-            if next_usage > max_server_disk_bytes {
-                let _ = target_fs.remove(&temporary_path);
-                return Err(Error::ServerDiskQuotaExceeded);
-            }
-            if let Err(error) = target_fs.rename(&temporary_path, &relative) {
-                let _ = target_fs.remove(&temporary_path);
-                return Err(Error::io(&relative, error));
-            }
-            total_bytes = next_total;
-            server_usage = next_usage;
-        }
-        Ok(())
+        // Whatever happened, the staging tree is scratch space and never part
+        // of the server the operator sees.
+        let _ = target_fs.remove(&staging);
+        outcome
     })
     .await
     .map_err(|e| Error::Task(e.to_string()))??;
 
     Ok(())
+}
+
+/// Prefix shared by every transient file and directory a restore creates.
+const RESTORE_STAGING_PREFIX: &str = ".mcpanel-restore-";
+
+/// Expand an archive into `staged_tree`, then move it over the server tree.
+///
+/// Split out of [`restore_with_limits_and_quota`] so the caller can remove the
+/// staging tree on every exit path with a single statement.
+fn expand_and_commit(
+    target_fs: &ScopedFs,
+    target: &Path,
+    archive: std::fs::File,
+    limits: ArchiveLimits,
+    max_server_disk_bytes: u64,
+    staged_tree: &Path,
+    displaced_tree: &Path,
+) -> Result<()> {
+    let mut server_usage = target_fs
+        .directory_size(".")
+        .map_err(|e| Error::io(target, e))?;
+    let mut tar = tar::Archive::new(GzDecoder::new(archive));
+    let mut entries = 0_usize;
+    let mut total_bytes = 0_u64;
+    // Relative paths, in archive order, that the commit phase must publish.
+    let mut directories: Vec<PathBuf> = Vec::new();
+    let mut files: Vec<PathBuf> = Vec::new();
+
+    for entry in tar.entries().map_err(Error::PlainIo)? {
+        let mut entry = entry.map_err(Error::PlainIo)?;
+        let path = entry.path().map_err(Error::PlainIo)?.into_owned();
+
+        // An archive is untrusted input: a crafted member path must not be
+        // able to write outside the server directory. `./` is harmless and
+        // is what `tar -C dir .` emits for every entry.
+        if !safe_member(&path) {
+            return Err(Error::UnsafeArchiveEntry(path.display().to_string()));
+        }
+
+        entries = entries.saturating_add(1);
+        if entries > limits.max_entries {
+            return Err(Error::ArchiveLimit("too many entries".into()));
+        }
+
+        let entry_type = entry.header().entry_type();
+        if entry_type.is_symlink() || entry_type.is_hard_link() {
+            // Links are not needed in a panel backup and are rejected
+            // completely. Never let tar::unpack resolve a link target.
+            return Err(Error::UnsafeArchiveEntry(path.display().to_string()));
+        }
+        let relative = normalise_member(&path)?;
+        if entry_type.is_dir() {
+            if !relative.as_os_str().is_empty() {
+                target_fs
+                    .create_dir_all(staged_tree.join(&relative))
+                    .map_err(|e| Error::io(&path, e))?;
+                directories.push(relative);
+            }
+            continue;
+        }
+        if !entry_type.is_file() {
+            return Err(Error::UnsafeArchiveEntry(path.display().to_string()));
+        }
+        let declared = entry.size();
+        if declared > limits.max_file_bytes {
+            return Err(Error::ArchiveLimit("file is too large".into()));
+        }
+        if relative.as_os_str().is_empty() {
+            return Err(Error::UnsafeArchiveEntry(path.display().to_string()));
+        }
+        let staged = staged_tree.join(&relative);
+        if let Some(parent) = staged.parent() {
+            target_fs
+                .create_dir_all(parent)
+                .map_err(|e| Error::io(parent, e))?;
+        }
+        // The quota is measured against the tree the restore will produce, so
+        // a file that replaces an existing one only costs its size difference.
+        let replaced_size = target_fs
+            .metadata(&relative)
+            .ok()
+            .filter(|metadata| metadata.is_file)
+            .map(|metadata| metadata.len)
+            .unwrap_or(0);
+        let mut output = target_fs
+            .create_new_file(&staged)
+            .map_err(|e| Error::io(&staged, e))?;
+        let copied = (|| -> Result<u64> {
+            let copied = copy_limited(
+                &mut entry,
+                &mut output,
+                total_bytes,
+                limits.max_total_bytes,
+                limits.max_file_bytes,
+                RestoreQuota {
+                    current_usage: server_usage,
+                    replaced_size,
+                    max_server_disk_bytes,
+                },
+            )?;
+            output.sync_all().map_err(Error::PlainIo)?;
+            Ok(copied)
+        })();
+        drop(output);
+        let copied = copied?;
+        total_bytes = total_bytes
+            .checked_add(copied)
+            .ok_or_else(|| Error::ArchiveLimit("expanded size overflow".into()))?;
+        server_usage = server_usage
+            .checked_sub(replaced_size)
+            .and_then(|usage| usage.checked_add(copied))
+            .ok_or(Error::ServerDiskQuotaExceeded)?;
+        if server_usage > max_server_disk_bytes {
+            return Err(Error::ServerDiskQuotaExceeded);
+        }
+        files.push(relative);
+    }
+
+    commit_staged_tree(target_fs, staged_tree, displaced_tree, &directories, &files)
+}
+
+/// Move a fully expanded staging tree over the live server directory.
+///
+/// Directories are created first and are never rolled back: an empty directory
+/// the archive would have created anyway is harmless, whereas removing one
+/// risks deleting a directory that already held the operator's files.
+fn commit_staged_tree(
+    target_fs: &ScopedFs,
+    staged_tree: &Path,
+    displaced_tree: &Path,
+    directories: &[PathBuf],
+    files: &[PathBuf],
+) -> Result<()> {
+    for directory in directories {
+        target_fs
+            .create_dir_all(directory)
+            .map_err(|e| Error::io(directory, e))?;
+    }
+
+    // Each published file records whether it displaced an original, so a
+    // failure part-way through can put the server tree back as it was.
+    let mut published: Vec<(&Path, bool)> = Vec::with_capacity(files.len());
+    for relative in files {
+        match publish_one(target_fs, staged_tree, displaced_tree, relative) {
+            Ok(displaced) => published.push((relative.as_path(), displaced)),
+            Err(error) => {
+                rollback_published(target_fs, displaced_tree, &published);
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Publish one staged file, reporting whether it displaced an existing entry.
+fn publish_one(
+    target_fs: &ScopedFs,
+    staged_tree: &Path,
+    displaced_tree: &Path,
+    relative: &Path,
+) -> Result<bool> {
+    if let Some(parent) = relative.parent() {
+        if !parent.as_os_str().is_empty() {
+            target_fs
+                .create_dir_all(parent)
+                .map_err(|e| Error::io(parent, e))?;
+        }
+    }
+    let saved = displaced_tree.join(relative);
+    let existing = target_fs.metadata(relative).ok();
+    if existing
+        .as_ref()
+        .is_some_and(|metadata| metadata.is_dir && !metadata.is_symlink)
+    {
+        // The archive holds a file where the server holds a directory. Moving
+        // the directory aside would silently discard everything inside it, so
+        // the conflict is reported and the restore rolled back instead.
+        return Err(Error::io(
+            relative,
+            std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "a directory occupies the path of a restored file",
+            ),
+        ));
+    }
+    let displaced = if existing.is_some() {
+        if let Some(parent) = saved.parent() {
+            target_fs
+                .create_dir_all(parent)
+                .map_err(|e| Error::io(parent, e))?;
+        }
+        if target_fs.metadata(&saved).is_ok() {
+            // A duplicate member for the same path: the entry already here was
+            // published by this restore, so the journal must keep the true
+            // original rather than be overwritten by it.
+            target_fs
+                .remove(relative)
+                .map_err(|e| Error::io(relative, e))?;
+        } else {
+            target_fs
+                .rename(relative, &saved)
+                .map_err(|e| Error::io(relative, e))?;
+        }
+        true
+    } else {
+        false
+    };
+    if let Err(error) = target_fs.rename(staged_tree.join(relative), relative) {
+        // Put this file's own original back before reporting, so the caller
+        // only has to undo the entries it recorded as published.
+        if displaced {
+            let _ = target_fs.rename(&saved, relative);
+        }
+        return Err(Error::io(relative, error));
+    }
+    Ok(displaced)
+}
+
+/// Undo published files, newest first, restoring anything they displaced.
+///
+/// Best effort by nature: the filesystem has already accepted these renames
+/// once, so the reverse renames are expected to succeed, and there is nothing
+/// better to do than continue if one does not.
+fn rollback_published(target_fs: &ScopedFs, displaced_tree: &Path, published: &[(&Path, bool)]) {
+    for (relative, displaced) in published.iter().rev() {
+        let _ = target_fs.remove(relative);
+        if *displaced {
+            let _ = target_fs.rename(displaced_tree.join(relative), relative);
+        }
+    }
 }
 
 /// Remove a backup and its metadata.
@@ -743,6 +903,97 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[tokio::test]
+    async fn a_restore_that_fails_on_a_later_entry_leaves_the_server_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backups = tmp.path().join("backups");
+        let server = tmp.path().join("server");
+
+        // Three files the restore would replace, and one the archive never
+        // mentions, so the assertions cover both merge behaviours.
+        write(&server.join("one.txt"), "original one");
+        write(&server.join("nested/two.txt"), "original two");
+        write(&server.join("three.txt"), "original three");
+        write(&server.join("untouched.txt"), "kept");
+        let before: Vec<(PathBuf, String)> =
+            ["one.txt", "nested/two.txt", "three.txt", "untouched.txt"]
+                .iter()
+                .map(|name| {
+                    let path = server.join(name);
+                    let body = std::fs::read_to_string(&path).unwrap();
+                    (path, body)
+                })
+                .collect();
+
+        // The first two entries fit the quota; the third pushes the projected
+        // tree over it, so the restore must fail after two files were staged.
+        make_archive(&backups, "partial", |builder| {
+            append_file(builder, "one.txt", b"new one");
+            append_file(builder, "nested/two.txt", b"new two");
+            append_file(builder, "three.txt", &vec![b'x'; 4096]);
+        });
+
+        let error = restore_with_limits_and_quota(
+            &backups,
+            "partial",
+            &server,
+            ArchiveLimits::default(),
+            256,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, Error::ServerDiskQuotaExceeded));
+
+        for (path, body) in before {
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+        }
+        assert!(!leftover_staging(&server));
+    }
+
+    #[tokio::test]
+    async fn a_restore_that_fails_while_publishing_rolls_the_server_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backups = tmp.path().join("backups");
+        let server = tmp.path().join("server");
+
+        write(&server.join("first.txt"), "original first");
+        // `blocked` already exists as a non-empty directory, so publishing a
+        // regular file over it fails during the commit phase rather than while
+        // the archive is being expanded.
+        write(&server.join("blocked/occupant.txt"), "occupant");
+
+        make_archive(&backups, "conflict", |builder| {
+            append_file(builder, "first.txt", b"new first");
+            append_file(builder, "blocked", b"new blocked");
+        });
+
+        let error = restore(&backups, "conflict", &server).await.unwrap_err();
+        assert!(matches!(error, Error::Io { .. } | Error::PlainIo(_)));
+
+        assert_eq!(
+            std::fs::read_to_string(server.join("first.txt")).unwrap(),
+            "original first"
+        );
+        assert_eq!(
+            std::fs::read_to_string(server.join("blocked/occupant.txt")).unwrap(),
+            "occupant"
+        );
+        assert!(!leftover_staging(&server));
+    }
+
+    /// Whether any transient restore artifact survived in a server directory.
+    fn leftover_staging(server: &Path) -> bool {
+        std::fs::read_dir(server)
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(RESTORE_STAGING_PREFIX)
+            })
     }
 
     fn make_archive(

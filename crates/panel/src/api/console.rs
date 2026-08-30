@@ -240,6 +240,22 @@ mod tests {
     use crate::state::{AppState, PlayitMode};
     use guardian::{GuardianConfig, ServerConfig};
 
+    /// The console's own authorization check: session snapshot first, then the
+    /// live user and server records, exactly as the socket loop applies it.
+    async fn live_access(state: &AppState, token: &str, server_id: &str) -> bool {
+        let Some(identity) = state.sessions.resolve(token).await else {
+            return false;
+        };
+        let mut authorized = identity.may_access(server_id);
+        if authorized && !identity.admin {
+            authorized = match state.store.user(&identity.username).await {
+                Some(user) => user.servers.contains(&server_id.to_string()),
+                None => false,
+            };
+        }
+        authorized && state.store.server(server_id).await.is_some()
+    }
+
     #[tokio::test]
     async fn revoked_session_cannot_execute_console_command() {
         let data_dir = tempfile::tempdir().unwrap();
@@ -284,7 +300,21 @@ mod tests {
             "revoked session must not be authorized for console command"
         );
 
-        // Also test permission removal without revoking session
+        // Permission removal without revoking the session: the console's live
+        // check re-reads the user record, so a stale session snapshot is not
+        // enough to keep streaming a server the operator lost access to.
+        state
+            .store
+            .update(|data| {
+                data.users.push(crate::store::User {
+                    username: "alice".into(),
+                    password_hash: "unused-in-this-test".into(),
+                    admin: false,
+                    servers: vec!["srv-1".into()],
+                })
+            })
+            .await
+            .unwrap();
         let token2 = state
             .sessions
             .create(Identity {
@@ -293,7 +323,8 @@ mod tests {
                 servers: vec!["srv-1".into()],
             })
             .await;
-        // Remove server permission via admin action
+        assert!(live_access(&state, &token2, "srv-1").await);
+
         state
             .store
             .update(|data| {
@@ -305,16 +336,11 @@ mod tests {
             })
             .await
             .unwrap();
-        // Session still exists but user record no longer has access; however Identity is snapshot from session,
-        // not live user record. The check uses Identity.servers from session, which is stale.
-        // To handle removal from user record, we need to re-resolve identity from store? But spec says
-        // session revocation or permission removal should block. For permission removal, we need to
-        // check live store or ensure sessions are revoked when permissions change.
-        // Our current per-command check uses session Identity only, so it would still allow.
-        // This test documents the gap and ensures session revoke path works; permission-change revoke
-        // would require explicit session invalidation (as done via revoke_user).
-        // For now, ensure at least session revoke blocks.
-        let _ = token2;
+        assert!(
+            !live_access(&state, &token2, "srv-1").await,
+            "revoking a server permission must end an established console session"
+        );
+
         state.playit.shutdown().await.unwrap();
     }
 

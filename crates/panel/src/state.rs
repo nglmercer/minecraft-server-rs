@@ -234,6 +234,28 @@ impl AppState {
             .ok_or_else(|| ApiError::NotFound(format!("server {id}")))
     }
 
+    /// The launch configuration of every server whose process is still alive.
+    ///
+    /// Editing a running server changes what its next start will use, not what
+    /// its JVM already reserved, so quota and port validation consults this
+    /// alongside the stored records.
+    pub async fn active_configs(&self) -> HashMap<String, guardian::ServerConfig> {
+        let guardians: Vec<(String, Arc<Guardian>)> = self
+            .guardians
+            .read()
+            .await
+            .iter()
+            .map(|(id, guardian)| (id.clone(), Arc::clone(guardian)))
+            .collect();
+        let mut active = HashMap::new();
+        for (id, guardian) in guardians {
+            if let Some(config) = guardian.active_config().await {
+                active.insert(id, config);
+            }
+        }
+        active
+    }
+
     /// Acquire the filesystem/quota lock owned by one live server.
     pub async fn server_resource_lock(
         &self,

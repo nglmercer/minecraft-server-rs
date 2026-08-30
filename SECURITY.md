@@ -82,6 +82,14 @@ by the panel API. Never include `Authorization` headers, cookies, tickets,
 passwords, or Playit secrets in bug reports or logs. Rotate credentials after
 any suspected exposure.
 
+## First-run credentials
+
+The panel prints the generated administrator password to standard output once,
+the only time it is shown. Under a service manager or a container runtime that
+capture becomes a log entry, so treat the first-run log of a new installation as
+a secret: change the password from the panel immediately, then rotate or purge
+the captured output.
+
 ## Maintainer repository settings
 
 Application code cannot enforce GitHub branch rules. Protect `main` in the

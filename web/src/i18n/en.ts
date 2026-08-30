@@ -260,6 +260,7 @@ export const en = {
     installedOn: "Installed {date}",
     notInstalled: "Nothing installed yet. It is downloaded on the first start.",
     needsInstall: "The next start will download a new artifact, because the configuration no longer matches what is installed.",
+    pendingRestart: "The running server still uses the configuration it was started with. Restart it to apply the saved changes.",
     pinned: "Restarting never changes the build. Use Update to take a newer one deliberately.",
     update: "Update / reinstall",
     updating: "Downloading…",

@@ -378,6 +378,12 @@ function Installed({ server, onChanged }: { server: Server; onChanged: () => voi
         </div>
       )}
 
+      {server.pending_restart && (
+        <div class="mt-3">
+          <Banner kind="info">{t("settings.pendingRestart")}</Banner>
+        </div>
+      )}
+
       <div class="mt-4">
         <Button
           disabled={busy || running}
