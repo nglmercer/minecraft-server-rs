@@ -46,6 +46,12 @@ jobs:
         with:
           key: ${{ matrix.os }}
 
+      - name: Install the Linux desktop tray dependencies
+        # Only the `linux-tray` steps below need these; the default build links
+        # none of them, which is what lets the release binary run on a server.
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev
+
       - name: Format
         # Checked on one platform only: the result cannot differ, and running it
         # twice only doubles the time it takes to tell you the same thing.
@@ -54,6 +60,12 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Clippy (Linux desktop tray)
+        # The Linux tray is an opt-in feature, so the default run above never
+        # compiles it. Without this step a broken tray backend reaches release.
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo clippy --workspace --all-targets --features panel/linux-tray -- -D warnings
 
       - name: Dependency advisories
         run: |
@@ -65,6 +77,10 @@ jobs:
         # child processes, and process handling is the part most likely to
         # differ between platforms — so it is the part least worth assuming.
         run: cargo test --workspace
+
+      - name: Test (Linux desktop tray)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo test --workspace --features panel/linux-tray
 
   frontend:
     name: Frontend

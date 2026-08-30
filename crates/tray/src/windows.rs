@@ -1,3 +1,6 @@
+//! The Windows tray backend: a winit event loop owning a `tray-icon` tray.
+
+use std::io;
 use std::process::Command;
 use std::sync::mpsc::SyncSender;
 
@@ -6,23 +9,67 @@ use tray_icon::menu::MenuEvent;
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use winit::application::ApplicationHandler;
 use winit::event::{StartCause, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::platform::windows::EventLoopBuilderExtWindows;
 
-use crate::icon;
-use crate::menu;
+#[path = "icon.rs"]
+mod icon;
+#[path = "menu.rs"]
+mod menu;
+
 use crate::TrayConfig;
 
-pub(crate) enum UserEvent {
+/// A running Windows tray, owned by [`crate::TrayHandle`].
+pub(crate) struct Backend {
+    proxy: Option<EventLoopProxy<UserEvent>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Backend {
+    pub(crate) fn start(config: TrayConfig, exit_tx: watch::Sender<bool>) -> io::Result<Self> {
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        let thread = std::thread::Builder::new()
+            .name("mcpanel-tray".into())
+            .spawn(move || run(config, exit_tx, ready_tx))?;
+
+        match ready_rx.recv() {
+            Ok(Ok(proxy)) => Ok(Self {
+                proxy: Some(proxy),
+                thread: Some(thread),
+            }),
+            Ok(Err(error)) => {
+                let _ = thread.join();
+                Err(io::Error::other(error))
+            }
+            Err(error) => {
+                let _ = thread.join();
+                Err(io::Error::other(format!(
+                    "tray event loop exited before initialization: {error}"
+                )))
+            }
+        }
+    }
+
+    pub(crate) fn shutdown(mut self) {
+        if let Some(proxy) = self.proxy.take() {
+            let _ = proxy.send_event(UserEvent::Shutdown);
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+enum UserEvent {
     TrayIcon(TrayIconEvent),
     Menu(MenuEvent),
     Shutdown,
 }
 
-pub(crate) fn run(
+fn run(
     config: TrayConfig,
     exit_tx: watch::Sender<bool>,
-    ready_tx: SyncSender<Result<winit::event_loop::EventLoopProxy<UserEvent>, String>>,
+    ready_tx: SyncSender<Result<EventLoopProxy<UserEvent>, String>>,
 ) {
     let mut event_loop_builder = EventLoop::<UserEvent>::with_user_event();
     event_loop_builder.with_any_thread(true);
@@ -81,8 +128,8 @@ struct TrayApplication {
     tray_icon: Option<TrayIcon>,
     open_panel_id: tray_icon::menu::MenuId,
     exit_id: tray_icon::menu::MenuId,
-    proxy: winit::event_loop::EventLoopProxy<UserEvent>,
-    ready_tx: Option<SyncSender<Result<winit::event_loop::EventLoopProxy<UserEvent>, String>>>,
+    proxy: EventLoopProxy<UserEvent>,
+    ready_tx: Option<SyncSender<Result<EventLoopProxy<UserEvent>, String>>>,
 }
 
 impl TrayApplication {

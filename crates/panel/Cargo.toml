@@ -6,6 +6,10 @@ license.workspace = true
 description = "A single-binary Minecraft server control panel"
 build = "build.rs"
 
+[features]
+# Forwarded to the tray crate; see its manifest for why this is off by default.
+linux-tray = ["tray/linux-tray"]
+
 [[bin]]
 name = "mcpanel"
 path = "src/main.rs"

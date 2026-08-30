@@ -31,6 +31,15 @@ jobs:
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
 
+          # The same glibc build with the system tray compiled in. It is a
+          # separate artifact because the tray links GTK, AppIndicator and
+          # X11/Wayland at load time, so this binary cannot start on a headless
+          # server: desktop users take this one, servers take the plain build.
+          - name: linux-x86_64-desktop
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            features: linux-tray
+
           # Statically linked, so it runs on Alpine and on distros older than
           # whatever the glibc build was made against.
           - name: linux-x86_64-static
@@ -75,15 +84,21 @@ jobs:
 
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
-          key: ${{ matrix.target }}
+          # Keyed by name, not target: the two glibc builds share a target but
+          # not a feature set, and must not share a cache entry.
+          key: ${{ matrix.name }}
 
       - name: Install the musl toolchain
         if: endsWith(matrix.target, '-musl')
         # ring compiles C, and needs a musl-targeting compiler to do it.
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
+      - name: Install the Linux desktop tray dependencies
+        if: matrix.features == 'linux-tray'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev
+
       - name: Build
-        run: cargo build --release --locked --target ${{ matrix.target }} -p panel --bin mcpanel
+        run: cargo build --release --locked --target ${{ matrix.target }} -p panel --bin mcpanel ${{ matrix.features && format('--features panel/{0}', matrix.features) || '' }}
 
       - name: Package (unix)
         if: runner.os != 'Windows'

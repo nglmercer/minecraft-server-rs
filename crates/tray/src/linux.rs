@@ -1,0 +1,170 @@
+//! The Linux tray backend.
+//!
+//! `tray-icon` talks to AppIndicator through GTK on Linux, and requires the
+//! tray to be built on a thread that has initialized GTK and is running a GTK
+//! main loop. winit drives its own X11/Wayland backend rather than GTK, so this
+//! backend owns a GTK main loop of its own instead of reusing the Windows one.
+
+use std::io;
+use std::process::Command;
+use std::sync::mpsc::SyncSender;
+
+use gtk::glib;
+use tokio::sync::watch;
+use tray_icon::menu::MenuEvent;
+use tray_icon::TrayIconBuilder;
+
+#[path = "icon.rs"]
+mod icon;
+#[path = "menu.rs"]
+mod menu;
+
+use crate::TrayConfig;
+
+/// A running Linux tray, owned by [`crate::TrayHandle`].
+pub(crate) struct Backend {
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Backend {
+    pub(crate) fn start(config: TrayConfig, exit_tx: watch::Sender<bool>) -> io::Result<Self> {
+        // A headless session (a server, a CI runner, an SSH login) has no tray
+        // to attach to. The caller logs a warning and continues without one.
+        if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+            return Err(io::Error::other(
+                "no display found (neither DISPLAY nor WAYLAND_DISPLAY is set)",
+            ));
+        }
+
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        let thread = std::thread::Builder::new()
+            .name("mcpanel-tray".into())
+            .spawn(move || run(config, exit_tx, ready_tx))?;
+
+        match ready_rx.recv() {
+            Ok(Ok(())) => Ok(Self {
+                thread: Some(thread),
+            }),
+            Ok(Err(error)) => {
+                let _ = thread.join();
+                Err(io::Error::other(error))
+            }
+            Err(error) => {
+                let _ = thread.join();
+                Err(io::Error::other(format!(
+                    "tray event loop exited before initialization: {error}"
+                )))
+            }
+        }
+    }
+
+    pub(crate) fn shutdown(mut self) {
+        quit_main_loop();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Ask the tray thread's GTK main loop to return.
+///
+/// `gtk::main_quit` may only be called from the GTK thread, so the request is
+/// posted to the main context as an idle callback. It is a no-op once the loop
+/// has already returned, which is what happens when the user chooses Exit and
+/// the panel then shuts the tray down in response.
+fn quit_main_loop() {
+    glib::idle_add(|| {
+        if gtk::main_level() > 0 {
+            gtk::main_quit();
+        }
+        glib::ControlFlow::Break
+    });
+}
+
+fn run(config: TrayConfig, exit_tx: watch::Sender<bool>, ready_tx: SyncSender<Result<(), String>>) {
+    // GTK records this thread as its main thread, so every tray and menu widget
+    // below has to be created here, after this call.
+    if let Err(error) = gtk::init() {
+        let _ = ready_tx.send(Err(format!(
+            "could not initialize GTK for the tray: {error}"
+        )));
+        return;
+    }
+
+    let tray_menu = match menu::build() {
+        Ok(menu) => menu,
+        Err(error) => {
+            let _ = ready_tx.send(Err(error.clone()));
+            tracing::error!(error = %error, "could not create the MCP Panel tray menu");
+            return;
+        }
+    };
+
+    let open_panel_id = tray_menu.open_panel.id().clone();
+    let exit_id = tray_menu.exit.id().clone();
+    let panel_url = config.panel_url;
+    // AppIndicator delivers no click events of its own, so the menu is the only
+    // way in: there is no left-click shortcut to open the panel on Linux.
+    MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+        if event.id() == &open_panel_id {
+            open_panel(&panel_url);
+        } else if event.id() == &exit_id {
+            let _ = exit_tx.send(true);
+            quit_main_loop();
+        }
+    }));
+
+    // Held for as long as the main loop runs: dropping it removes the icon.
+    // A tooltip is not set because AppIndicator ignores it.
+    let _tray_icon = match icon::load().and_then(|icon| {
+        TrayIconBuilder::new()
+            .with_menu(Box::new(tray_menu.menu))
+            .with_icon(icon)
+            .build()
+            .map_err(|_| icon::IconError::backend_rejected())
+    }) {
+        Ok(tray_icon) => tray_icon,
+        Err(error) => {
+            let _ = ready_tx.send(Err(error.to_string()));
+            tracing::error!(error = %error, "could not create the MCP Panel tray icon");
+            MenuEvent::set_event_handler(None::<fn(MenuEvent)>);
+            return;
+        }
+    };
+
+    if ready_tx.send(Ok(())).is_err() {
+        MenuEvent::set_event_handler(None::<fn(MenuEvent)>);
+        return;
+    }
+
+    gtk::main();
+
+    MenuEvent::set_event_handler(None::<fn(MenuEvent)>);
+}
+
+fn open_panel(panel_url: &str) {
+    // The URL is generated by the panel from its bound port. Use a direct
+    // executable invocation rather than a shell so this action cannot turn a
+    // URL into shell syntax.
+    //
+    // xdg-open is the portable choice; the rest cover desktops that ship
+    // without xdg-utils installed.
+    let candidates: [&[&str]; 4] = [
+        &["xdg-open", panel_url],
+        &["gio", "open", panel_url],
+        &["kde-open5", panel_url],
+        &["sensible-browser", panel_url],
+    ];
+
+    let mut last_error = None;
+    for candidate in candidates {
+        match Command::new(candidate[0]).args(&candidate[1..]).spawn() {
+            Ok(_) => return,
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    if let Some(error) = last_error {
+        tracing::warn!(error = %error, "could not open the MCP Panel in a browser");
+    }
+}

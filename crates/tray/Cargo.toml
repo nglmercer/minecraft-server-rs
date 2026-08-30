@@ -3,7 +3,13 @@ name = "tray"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Windows system-tray integration for MCP Panel"
+description = "System-tray integration for MCP Panel (Windows + Linux)"
+
+[features]
+# The Linux tray links GTK, AppIndicator, and X11/Wayland at load time, so a
+# build with it enabled cannot start on a headless server that lacks them.
+# Leave it off for server builds; turn it on for desktop packaging.
+linux-tray = ["dep:tray-icon", "dep:gtk"]
 
 [dependencies]
 tokio.workspace = true
@@ -12,3 +18,11 @@ tracing.workspace = true
 [target.'cfg(windows)'.dependencies]
 tray-icon = { version = "0.24.2", default-features = false }
 winit = { version = "0.30", default-features = false }
+
+[target.'cfg(all(target_os = "linux", not(target_env = "musl")))'.dependencies]
+# `gtk` is the Linux backend (AppIndicator). The other default feature,
+# `libxdo`, only backs the predefined Copy/Cut/Paste items, which this menu does
+# not use, so it is left out to drop a runtime library.
+tray-icon = { version = "0.24.2", default-features = false, features = ["gtk"], optional = true }
+# Must match the gtk version tray-icon itself builds against.
+gtk = { version = "0.18", optional = true }

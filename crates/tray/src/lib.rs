@@ -3,15 +3,27 @@
 //! The tray is deliberately kept outside of `guardian`: it only observes the
 //! panel lifecycle and sends a shutdown request. Server operations will be
 //! connected to the panel API in a later milestone.
+//!
+//! Each platform gets its own backend, because the two supported ones do not
+//! share an event loop: Windows runs winit, Linux runs GTK. Everything else
+//! falls back to a no-op backend.
 
 #![forbid(unsafe_code)]
 
 #[cfg(windows)]
-mod events;
-#[cfg(windows)]
-mod icon;
-#[cfg(windows)]
-mod menu;
+#[path = "windows.rs"]
+mod backend;
+
+#[cfg(all(target_os = "linux", not(target_env = "musl"), feature = "linux-tray"))]
+#[path = "linux.rs"]
+mod backend;
+
+#[cfg(not(any(
+    windows,
+    all(target_os = "linux", not(target_env = "musl"), feature = "linux-tray")
+)))]
+#[path = "unsupported.rs"]
+mod backend;
 
 use std::io;
 
@@ -37,55 +49,27 @@ impl TrayConfig {
 pub struct TrayHandle {
     exit_tx: watch::Sender<bool>,
     exit_rx: watch::Receiver<bool>,
-    #[cfg(windows)]
-    proxy: Option<winit::event_loop::EventLoopProxy<events::UserEvent>>,
-    #[cfg(windows)]
-    thread: Option<std::thread::JoinHandle<()>>,
+    backend: backend::Backend,
 }
 
 /// Start the tray integration.
 ///
-/// Windows owns the native event loop for the first desktop milestone. Other
-/// platforms receive a no-op handle so the panel remains usable while their
-/// native tray implementation is added in a later milestone.
+/// Windows and Linux desktop builds own a native event loop. Every other
+/// target, and any session that has no tray to attach to, gets a no-op handle
+/// so the panel remains usable; the error explains which it was.
 pub fn start(config: TrayConfig) -> io::Result<TrayHandle> {
+    if std::env::var_os("MCPANEL_NO_TRAY").is_some() {
+        return Err(io::Error::other("the tray is disabled by MCPANEL_NO_TRAY"));
+    }
+
     let (exit_tx, exit_rx) = watch::channel(false);
+    let backend = backend::Backend::start(config, exit_tx.clone())?;
 
-    #[cfg(windows)]
-    {
-        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
-        let thread_exit_tx = exit_tx.clone();
-        let thread = std::thread::Builder::new()
-            .name("mcpanel-tray".into())
-            .spawn(move || events::run(config, thread_exit_tx, ready_tx))?;
-
-        let proxy = match ready_rx.recv() {
-            Ok(Ok(proxy)) => proxy,
-            Ok(Err(error)) => {
-                let _ = thread.join();
-                return Err(io::Error::other(error));
-            }
-            Err(error) => {
-                let _ = thread.join();
-                return Err(io::Error::other(format!(
-                    "tray event loop exited before initialization: {error}"
-                )));
-            }
-        };
-
-        Ok(TrayHandle {
-            exit_tx,
-            exit_rx,
-            proxy: Some(proxy),
-            thread: Some(thread),
-        })
-    }
-
-    #[cfg(not(windows))]
-    {
-        let _ = config;
-        Ok(TrayHandle { exit_tx, exit_rx })
-    }
+    Ok(TrayHandle {
+        exit_tx,
+        exit_rx,
+        backend,
+    })
 }
 
 impl TrayHandle {
@@ -97,16 +81,6 @@ impl TrayHandle {
     /// Stop the native tray event loop, if this platform has one.
     pub fn shutdown(self) {
         let _ = self.exit_tx.send(true);
-
-        #[cfg(windows)]
-        {
-            let mut handle = self;
-            if let Some(proxy) = handle.proxy.take() {
-                let _ = proxy.send_event(events::UserEvent::Shutdown);
-            }
-            if let Some(thread) = handle.thread.take() {
-                let _ = thread.join();
-            }
-        }
+        self.backend.shutdown();
     }
 }

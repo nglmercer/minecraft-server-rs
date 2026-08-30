@@ -42,6 +42,14 @@ On Windows, `mcpanel` also starts a small system-tray presence. Its first
 milestone provides Open Panel and Exit; server controls and live status are
 planned for later milestones.
 
+Linux gets the same tray, but only in a build that opts into it: it needs GTK 3
+and AppIndicator at load time, which a headless server has no reason to carry.
+Take the `linux-x86_64-desktop` release asset, or build with
+`cargo build --release -p panel --features panel/linux-tray`. The plain
+`linux-x86_64` and static builds have no tray and no desktop dependencies. The
+tray is opened from its menu (AppIndicator sends no click events of its own),
+and `MCPANEL_NO_TRAY=1` turns it off on any platform.
+
 > Full install, data-dir layout, and static vs glibc builds → [docs/getting-started.md](docs/getting-started.md)
 
 ## Documentation
@@ -69,8 +77,8 @@ Browse all guides in [`docs/`](docs/README.md). Security disclosure policy is in
 |------|------------|
 | `crates/guardian` | Lifecycle library. No HTTP, no panel concepts. |
 | `crates/panel` | `mcpanel` binary: API, auth, embedded frontend. |
-| `crates/tray` | Windows system-tray presence and panel lifecycle exit control. |
-| `assets/mcp.ico` | Embedded Windows tray icon. |
+| `crates/tray` | Windows and Linux system-tray presence and panel lifecycle exit control. |
+| `assets/mcp.ico` | Embedded tray icon. |
 | `crates/playit-integration` | Embedded Playit runtime and optional daemon IPC. |
 | `web` | Vite + Preact + TypeScript + Tailwind v4 frontend. |
 | `vendor/java-path-rs` | Submodule: Java discovery and provisioning. |
