@@ -14,6 +14,7 @@
 mod api;
 mod auth;
 mod backups;
+mod bind;
 mod error;
 mod filesystem;
 mod limits;
@@ -39,6 +40,10 @@ use tokio::sync::watch;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
+use crate::bind::{
+    bind_with_fallback, panel_url, remove_instance_lock, resolve_effective_bind,
+    write_instance_lock,
+};
 use crate::limits::ResourceLimits;
 use crate::state::AppState;
 use crate::state::PlayitMode;
@@ -56,9 +61,11 @@ struct Args {
     #[arg(long, default_value = "./data", env = "MCPANEL_DATA")]
     data_dir: PathBuf,
 
-    /// Address to listen on.
-    #[arg(long, default_value = "127.0.0.1:8080", env = "MCPANEL_BIND")]
-    bind: SocketAddr,
+    /// Address to listen on. Default is 127.0.0.1:8080 when neither the flag nor an
+    /// optional port file is present. A file at `<data-dir>/port` (or `<data-dir>/bind`)
+    /// may override the default without needing a flag.
+    #[arg(long, env = "MCPANEL_BIND", value_name = "ADDR")]
+    bind: Option<SocketAddr>,
 
     /// Allow browser requests from any origin. Needed only for `npm run dev`.
     #[arg(long, env = "MCPANEL_DEV_CORS")]
@@ -176,7 +183,8 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
-    if !args.bind.ip().is_loopback() && !args.allow_insecure_http {
+    let effective_bind = resolve_effective_bind(args.bind, &args.data_dir);
+    if !effective_bind.ip().is_loopback() && !args.allow_insecure_http {
         anyhow::bail!(
             "non-loopback HTTP is disabled; terminate TLS in a reverse proxy or pass --allow-insecure-http only for a deliberately isolated network"
         );
@@ -242,13 +250,11 @@ async fn main() -> Result<()> {
 
         let app = app.with_state(state.clone());
 
-        let listener = tokio::net::TcpListener::bind(args.bind)
-            .await
-            .with_context(|| format!("binding {}", args.bind))?;
-
-        let local_addr = listener
-            .local_addr()
-            .context("reading the panel listener address")?;
+        let (listener, local_addr) = bind_with_fallback(effective_bind, &state.data_dir).await?;
+        // Persist instance lock for single-instance detection and tray discovery.
+        if let Err(e) = write_instance_lock(&state.data_dir, local_addr).await {
+            tracing::warn!(error=%e, "could not write instance lock");
+        }
         let panel_url_str = panel_url(local_addr);
         let tray = match tray::start(TrayConfig::new(panel_url_str.clone())) {
             Ok(tray) => Some(tray),
@@ -262,8 +268,16 @@ async fn main() -> Result<()> {
 
         tracing::info!(
             "panel listening on http://{} (use a TLS reverse proxy for remote access)",
-            args.bind
+            local_addr
         );
+        if local_addr != effective_bind {
+            tracing::info!(
+                "requested {} but bound to {} (port file: {}/port or --bind to pin)",
+                effective_bind,
+                local_addr,
+                state.data_dir.display()
+            );
+        }
 
         // First-run desktop experience: open setup automatically when uninitialized.
         if state.store.read().await.users.is_empty() {
@@ -320,9 +334,16 @@ async fn main() -> Result<()> {
             tray.shutdown();
         }
 
+        // Clean up instance lock (data_dir is canonical after bootstrap).
+        remove_instance_lock(&state.data_dir).await;
+
         serve_result
     }
     .await;
+
+    // Also ensure lock is gone if bootstrap succeeded but server never started (bind error).
+    // state.data_dir is canonical; best-effort.
+    remove_instance_lock(&state.data_dir).await;
 
     state.shutdown_servers().await;
 
@@ -411,19 +432,6 @@ async fn shutdown_with_tray(tray_exit: Option<watch::Receiver<bool>>) {
                 tracing::info!("shutting down from the system tray");
             }
         }
-    }
-}
-
-fn panel_url(address: SocketAddr) -> String {
-    match address {
-        SocketAddr::V4(address) if address.ip().is_unspecified() => {
-            format!("http://127.0.0.1:{}", address.port())
-        }
-        SocketAddr::V6(address) if address.ip().is_unspecified() => {
-            format!("http://[::1]:{}", address.port())
-        }
-        SocketAddr::V4(address) => format!("http://{}", address),
-        SocketAddr::V6(address) => format!("http://[{}]:{}", address.ip(), address.port()),
     }
 }
 

@@ -24,7 +24,7 @@ Two Linux builds are published: `linux-x86_64` (glibc) and `linux-x86_64-static`
 
 The first run prints a generated `admin` password. It is shown once — save it.
 
-- Default bind is loopback (`127.0.0.1:8080`). For remote access keep it on loopback behind an HTTPS reverse proxy; see [Security — Secure remote deployment](security.md#secure-remote-deployment).
+- Default bind is loopback (`127.0.0.1:8080`). For remote access keep it on loopback behind an HTTPS reverse proxy; see [Security — Secure remote deployment](security.md#secure-remote-deployment). Override without flags by writing `<data-dir>/port` (or `<data-dir>/bind`) containing `8081` or `127.0.0.1:8081`; `--bind` / `MCPANEL_BIND` still wins. If the port is busy, the panel opens the existing instance or tries the next free port `8081-8099`; the active address is written to `<data-dir>/.lock`.
 - Direct non-loopback plaintext HTTP is refused unless `--allow-insecure-http` is supplied explicitly for a trusted, isolated network.
 - On Linux install `bubblewrap` (`bwrap`) for the strongest sandbox; macOS uses `sandbox-exec` when available. If the helper is unavailable, Minecraft startup is refused unless `--allow-unsandboxed-servers` is supplied (or `MCPANEL_ALLOW_UNSANDBOXED_SERVERS=true` is set). See [Security](security.md) and [Platforms](platforms.md).
 

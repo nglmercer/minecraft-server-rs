@@ -46,6 +46,8 @@ jobs:
             os: ubuntu-latest
             target: x86_64-unknown-linux-musl
 
+          # Windows always includes the system tray (crates/tray cfg(windows) + embedded assets/mcp.ico).
+          # No feature flag needed — the tray is compiled in on this target automatically.
           - name: windows-x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -97,6 +99,11 @@ jobs:
         if: matrix.features == 'linux-tray'
         run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev
 
+      - name: Verify tray icon asset is present
+        # The Windows and linux-desktop builds embed assets/mcp.ico at compile time via crates/tray.
+        # Fail fast if the icon is missing rather than shipping a tray without an icon.
+        run: test -f assets/mcp.ico || (echo "::error::assets/mcp.ico missing — tray builds will fail"; exit 1)
+
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }} -p panel --bin mcpanel ${{ matrix.features && format('--features panel/{0}', matrix.features) || '' }}
 
@@ -133,7 +140,15 @@ jobs:
           binary="target/${{ matrix.target }}/release/mcpanel"
           [ "${{ runner.os }}" = "Windows" ] && binary="${binary}.exe"
 
-          "$binary" --data-dir ./release-check --bind 127.0.0.1:8099 &
+          # Windows tray tries to init a winit event loop; on CI there is no
+          # display, so run with MCPANEL_NO_TRAY=1 to verify the panel itself.
+          # The build still contains the tray (embedded icon) — this only skips runtime init.
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            MCPANEL_NO_TRAY=1 "$binary" --data-dir ./release-check --bind 127.0.0.1:8099 &
+          else
+            "$binary" --data-dir ./release-check --bind 127.0.0.1:8099 &
+          fi
+          pid1=$!
           for _ in $(seq 1 30); do
             curl -sf http://127.0.0.1:8099/ >/dev/null && break
             sleep 1
@@ -142,8 +157,30 @@ jobs:
           # A release that quietly ships the "frontend not built" page would
           # otherwise look like a perfectly good release.
           curl -s http://127.0.0.1:8099/ | grep -q 'assets/index-' \
-            || { echo "::error::${{ matrix.name }} is not serving the embedded frontend"; exit 1; }
+            || { echo "::error::${{ matrix.name }} is not serving the embedded frontend"; kill $pid1 || true; exit 1; }
           echo "${{ matrix.name }} runs and serves the embedded frontend"
+
+          # Verify port-file override works (default 8080 must remain correct).
+          # The binary should honour <data-dir>/port and fall back to 8080 when absent.
+          MCPANEL_NO_TRAY=1 "$binary" --data-dir ./release-check2 --bind 127.0.0.1:8098 &
+          pid=$!
+          for _ in $(seq 1 10); do curl -sf http://127.0.0.1:8098/ >/dev/null && break; sleep 1; done
+          kill $pid || true
+          wait $pid || true
+          mkdir -p ./release-check2
+          echo "8097" > ./release-check2/port
+          MCPANEL_NO_TRAY=1 "$binary" --data-dir ./release-check2 &
+          pid2=$!
+          for _ in $(seq 1 30); do curl -sf http://127.0.0.1:8097/ >/dev/null && break; sleep 1; done
+          curl -s http://127.0.0.1:8097/ | grep -q 'assets/index-' \
+            || { echo "::error::${{ matrix.name }} did not honour <data-dir>/port override"; kill $pid2 || true; exit 1; }
+          echo "${{ matrix.name }} honours <data-dir>/port (bind module)"
+          # Cleanup port test instances
+          kill $pid1 || true
+          kill $pid2 || true
+          wait $pid1 || true
+          wait $pid2 || true
+          rm -rf ./release-check ./release-check2
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
