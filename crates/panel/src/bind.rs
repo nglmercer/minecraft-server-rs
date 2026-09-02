@@ -344,10 +344,7 @@ mod tests {
             panel_url("0.0.0.0:8080".parse().unwrap()),
             "http://127.0.0.1:8080"
         );
-        assert_eq!(
-            panel_url("[::]:8080".parse().unwrap()),
-            "http://[::1]:8080"
-        );
+        assert_eq!(panel_url("[::]:8080".parse().unwrap()), "http://[::1]:8080");
     }
 
     #[tokio::test]

@@ -141,7 +141,11 @@ impl GoogleDriveBackupProvider {
 
     fn effective_folder_id(&self) -> &str {
         let id = self.config.folder_id.trim();
-        if id.is_empty() { "root" } else { id }
+        if id.is_empty() {
+            "root"
+        } else {
+            id
+        }
     }
 
     async fn ensure_folder(&self, token: &str) -> ApiResult<()> {
@@ -462,7 +466,10 @@ impl BackupProvider for GoogleDriveBackupProvider {
 
     async fn list(&self, server_id: &str) -> Result<Vec<RemoteBackup>, ApiError> {
         let token = self.fetch_access_token().await?;
-        let q = format!("'{}' in parents and trashed=false", self.effective_folder_id());
+        let q = format!(
+            "'{}' in parents and trashed=false",
+            self.effective_folder_id()
+        );
         let url = format!("{}/drive/v3/files", Self::drive_api_base());
         let mut out = Vec::new();
         let mut page_token: Option<String> = None;

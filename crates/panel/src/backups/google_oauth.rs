@@ -87,7 +87,9 @@ fn urlencoding(s: &str) -> String {
 #[allow(dead_code)]
 pub fn token_path(data_dir: &Path) -> PathBuf {
     // SecretStorage path_for will give data/secrets/google-oauth.json
-    data_dir.join("secrets").join(format!("{TOKEN_FILE_REF}.json"))
+    data_dir
+        .join("secrets")
+        .join(format!("{TOKEN_FILE_REF}.json"))
 }
 
 pub async fn load_tokens(data_dir: &Path) -> Option<OAuthTokens> {
@@ -162,9 +164,11 @@ pub async fn exchange_code(
         .expires_in
         .map(|secs| time::OffsetDateTime::now_utc().unix_timestamp() as u64 + secs);
     Ok(OAuthTokens {
-        refresh_token: body
-            .refresh_token
-            .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("no refresh_token (prompt=consent required)")))?,
+        refresh_token: body.refresh_token.ok_or_else(|| {
+            ApiError::Internal(anyhow::anyhow!(
+                "no refresh_token (prompt=consent required)"
+            ))
+        })?,
         access_token: Some(body.access_token),
         expires_at,
         scope: body.scope,
@@ -227,8 +231,8 @@ pub async fn refresh_access_token(
 
 /// Get valid access token, refreshing if needed.
 pub async fn get_access_token(data_dir: &Path) -> ApiResult<String> {
-    let (client_id, client_secret) =
-        client_config().ok_or_else(|| ApiError::Internal(anyhow::anyhow!("oauth not configured")))?;
+    let (client_id, client_secret) = client_config()
+        .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("oauth not configured")))?;
     refresh_access_token(data_dir, &client_id, &client_secret).await
 }
 

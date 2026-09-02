@@ -1,9 +1,9 @@
 //! Backup storage settings API.
 
 use axum::extract::{Path, Query, State};
+use axum::response::Html;
 #[allow(unused_imports)]
 use axum::routing::{delete, get, patch, post};
-use axum::response::Html;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -251,7 +251,11 @@ async fn oauth_start(
         created_at: Instant::now(),
         admin: admin.username.clone(),
     };
-    state.google_oauth_states.write().await.insert(st.clone(), pending);
+    state
+        .google_oauth_states
+        .write()
+        .await
+        .insert(st.clone(), pending);
     let url = google_oauth::build_auth_url(&client_id, &body.redirect_uri, &st);
     Ok(Json(OAuthStartResponse { url, state: st }))
 }
@@ -270,8 +274,12 @@ async fn oauth_callback(
     if let Some(err) = q.error {
         return Ok(Html(format!("<html><body><h2>Google auth failed: {}</h2><p>You can close this window.</p></body></html>", err)));
     }
-    let code = q.code.ok_or_else(|| ApiError::BadRequest("missing code".into()))?;
-    let st = q.state.ok_or_else(|| ApiError::BadRequest("missing state".into()))?;
+    let code = q
+        .code
+        .ok_or_else(|| ApiError::BadRequest("missing code".into()))?;
+    let st = q
+        .state
+        .ok_or_else(|| ApiError::BadRequest("missing state".into()))?;
     let pending = {
         let mut map = state.google_oauth_states.write().await;
         map.remove(&st)
@@ -287,8 +295,12 @@ async fn oauth_callback(
             "Google OAuth not configured on server — set MCPANEL_GOOGLE_CLIENT_ID and MCPANEL_GOOGLE_CLIENT_SECRET then restart.".into(),
         )
     })?;
-    let tokens = google_oauth::exchange_code(&code, &pending.redirect_uri, &client_id, &client_secret).await?;
-    google_oauth::save_tokens(&state.data_dir, &tokens).await.map_err(|e| ApiError::Internal(e.into()))?;
+    let tokens =
+        google_oauth::exchange_code(&code, &pending.redirect_uri, &client_id, &client_secret)
+            .await?;
+    google_oauth::save_tokens(&state.data_dir, &tokens)
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
     tracing::info!(by=%pending.admin, "google drive oauth connected");
     Ok(Html(
         r##"<!doctype html><html><head><meta charset="utf-8"><title>Connected</title><style>body{font-family:system-ui;background:#0b0f14;color:#e6f0f2;display:grid;place-items:center;height:100vh;margin:0}div{border:1px solid #1e2a33;padding:24px;border-radius:12px;background:#111a22;text-align:center}a{color:#3dd68c}</style></head><body><div><h2>✓ Google Drive connected</h2><p>You can close this window and return to the panel.</p><p><a href='#' onclick='window.close()'>Close</a></p><script>setTimeout(()=>window.close(),2000)</script></div></body></html>"##.to_string(),
@@ -301,14 +313,18 @@ async fn oauth_status(
 ) -> ApiResult<Json<serde_json::Value>> {
     let connected = google_oauth::is_connected(&state.data_dir).await;
     let configured = google_oauth::client_config().is_some();
-    Ok(Json(serde_json::json!({ "connected": connected, "configured": configured })))
+    Ok(Json(
+        serde_json::json!({ "connected": connected, "configured": configured }),
+    ))
 }
 
 async fn oauth_disconnect(
     State(state): State<Arc<AppState>>,
     AdminIdentity(admin): AdminIdentity,
 ) -> ApiResult<Json<serde_json::Value>> {
-    google_oauth::delete_tokens(&state.data_dir).await.map_err(|e| ApiError::Internal(e.into()))?;
+    google_oauth::delete_tokens(&state.data_dir)
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
     tracing::info!(by=%admin.username, "google drive oauth disconnected");
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -442,9 +458,15 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/settings/backups/secret", post(upload_secret))
         .route("/settings/backups/test", post(test_connection))
         .route("/settings/backups/google/oauth/start", post(oauth_start))
-        .route("/settings/backups/google/oauth/callback", get(oauth_callback))
+        .route(
+            "/settings/backups/google/oauth/callback",
+            get(oauth_callback),
+        )
         .route("/settings/backups/google/oauth/status", get(oauth_status))
-        .route("/settings/backups/google/oauth/disconnect", delete(oauth_disconnect))
+        .route(
+            "/settings/backups/google/oauth/disconnect",
+            delete(oauth_disconnect),
+        )
 }
 
 pub fn server_router() -> Router<Arc<AppState>> {
