@@ -281,14 +281,14 @@ export const es: Dictionary = {
     runningWarning:
       "Restaurar está deshabilitado mientras el servidor está en marcha — descomprimir un mundo bajo una JVM activa lo corrompe. Detén el servidor primero.",
     storageTitle: "Almacenamiento de copias",
-    storageSubtitle: "Valores globales — se usan cuando el servidor hereda la configuración (por defecto local).",
+    storageSubtitle: "Local por defecto — retención global abajo. Usa Google Drive por servidor si necesitas copias en la nube.",
     perServerTitle: "Almacenamiento de este servidor",
     useGlobal: "Usar configuración global",
     providerLabel: "Proveedor de copias",
     maxBackupsLabel: "Máximo de copias",
     maxAgeLabel: "Edad máxima (días) — vacío = deshabilitado",
     oauthHint: "Usa la conexión OAuth global de Google; la carpeta puede sobrescribirse por servidor.",
-    perServerHint: "Si hereda, usa el proveedor global (local por defecto). La configuración personalizada solo afecta a este servidor.",
+    perServerHint: "Si hereda, usa almacenamiento local con retención global. La configuración personalizada solo afecta a este servidor.",
   },
 
   settings: {

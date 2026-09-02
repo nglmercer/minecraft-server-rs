@@ -139,11 +139,20 @@ impl GoogleDriveBackupProvider {
         "https://www.googleapis.com"
     }
 
+    fn effective_folder_id(&self) -> &str {
+        let id = self.config.folder_id.trim();
+        if id.is_empty() { "root" } else { id }
+    }
+
     async fn ensure_folder(&self, token: &str) -> ApiResult<()> {
+        // Empty folder_id means My Drive root (alias "root" in Drive API). Root always exists.
+        if self.config.folder_id.trim().is_empty() || self.config.folder_id.trim() == "root" {
+            return Ok(());
+        }
         let url = format!(
             "{}/drive/v3/files/{}",
             Self::drive_api_base(),
-            self.config.folder_id
+            self.effective_folder_id()
         );
         let resp = self
             .client
@@ -262,7 +271,7 @@ impl BackupProvider for GoogleDriveBackupProvider {
         // Only small immutable IDs are stored there; full note stays in panel.json
         let metadata = serde_json::json!({
             "name": file_name,
-            "parents": [self.config.folder_id],
+            "parents": [self.effective_folder_id()],
             "appProperties": {
                 "mcpanel_server_id": server_id,
                 "mcpanel_backup_id": artifact.id,
@@ -453,7 +462,7 @@ impl BackupProvider for GoogleDriveBackupProvider {
 
     async fn list(&self, server_id: &str) -> Result<Vec<RemoteBackup>, ApiError> {
         let token = self.fetch_access_token().await?;
-        let q = format!("'{}' in parents and trashed=false", self.config.folder_id);
+        let q = format!("'{}' in parents and trashed=false", self.effective_folder_id());
         let url = format!("{}/drive/v3/files", Self::drive_api_base());
         let mut out = Vec::new();
         let mut page_token: Option<String> = None;
@@ -637,7 +646,7 @@ impl BackupProvider for GoogleDriveBackupProvider {
         let probe_name = format!(".mcpanel-health-{}", uuid::Uuid::new_v4().simple());
         let metadata = serde_json::json!({
             "name": probe_name,
-            "parents": [self.config.folder_id],
+            "parents": [self.effective_folder_id()],
             "mimeType": "text/plain"
         });
         let url = format!(

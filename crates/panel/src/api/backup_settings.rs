@@ -101,16 +101,26 @@ async fn patch_global(
     }
     if let Some(gd) = &body.google_drive {
         if let Some(fid) = &gd.folder_id {
-            if fid.trim().is_empty() || fid.len() > 512 {
+            if fid.len() > 512 {
                 return Err(ApiError::BadRequest("invalid folder_id".into()));
             }
+        }
+    }
+    // Global backups are always local — provider switch is per-server only.
+    if let Some(p) = body.provider.clone() {
+        if p != crate::store::BackupProviderKind::Local {
+            return Err(ApiError::BadRequest(
+                "global backups are always local; configure Google Drive per server instead".into(),
+            ));
         }
     }
     let _updated = state
         .store
         .try_update(|data| -> ApiResult<BackupSettingsView> {
             if let Some(provider) = body.provider.clone() {
-                data.backup_storage.provider = provider;
+                // Enforce local globally even if client sends it.
+                let _ = provider;
+                data.backup_storage.provider = crate::store::BackupProviderKind::Local;
             }
             if let Some(retention) = body.retention.clone() {
                 retention.validate().map_err(ApiError::BadRequest)?;
@@ -227,8 +237,11 @@ async fn oauth_start(
     AdminIdentity(admin): AdminIdentity,
     Json(body): Json<OAuthStartRequest>,
 ) -> ApiResult<Json<OAuthStartResponse>> {
-    let (client_id, _) = google_oauth::client_config()
-        .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("Google OAuth not configured: set MCPANEL_GOOGLE_CLIENT_ID and MCPANEL_GOOGLE_CLIENT_SECRET").into()))?;
+    let (client_id, _) = google_oauth::client_config().ok_or_else(|| {
+        ApiError::BadRequest(
+            "Google OAuth not configured on server — set MCPANEL_GOOGLE_CLIENT_ID and MCPANEL_GOOGLE_CLIENT_SECRET then restart the panel. Add redirect URI /api/settings/backups/google/oauth/callback in Google Cloud Console.".into(),
+        )
+    })?;
     if body.redirect_uri.trim().is_empty() || !body.redirect_uri.starts_with("http") {
         return Err(ApiError::BadRequest("invalid redirect_uri".into()));
     }
@@ -269,8 +282,11 @@ async fn oauth_callback(
     if pending.created_at.elapsed() > std::time::Duration::from_secs(600) {
         return Err(ApiError::BadRequest("state expired".into()));
     }
-    let (client_id, client_secret) = google_oauth::client_config()
-        .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("oauth not configured").into()))?;
+    let (client_id, client_secret) = google_oauth::client_config().ok_or_else(|| {
+        ApiError::BadRequest(
+            "Google OAuth not configured on server — set MCPANEL_GOOGLE_CLIENT_ID and MCPANEL_GOOGLE_CLIENT_SECRET then restart.".into(),
+        )
+    })?;
     let tokens = google_oauth::exchange_code(&code, &pending.redirect_uri, &client_id, &client_secret).await?;
     google_oauth::save_tokens(&state.data_dir, &tokens).await.map_err(|e| ApiError::Internal(e.into()))?;
     tracing::info!(by=%pending.admin, "google drive oauth connected");

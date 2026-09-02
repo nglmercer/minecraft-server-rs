@@ -105,7 +105,10 @@ pub struct GoogleDriveConfig {
 
 impl GoogleDriveConfig {
     pub fn validate(&self) -> Result<(), String> {
-        if self.folder_id.trim().is_empty() || self.folder_id.len() > 512 {
+        if self.folder_id.len() > 512 {
+            return Err("folder_id must be 0-512 chars (empty means My Drive root)".into());
+        }
+        if !self.folder_id.trim().is_empty() && self.folder_id.trim().len() > 512 {
             return Err("folder_id must be 1-512 chars".into());
         }
         if self.credential_ref.trim().is_empty()
