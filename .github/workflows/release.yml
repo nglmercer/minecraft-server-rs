@@ -102,6 +102,8 @@ jobs:
       - name: Verify tray icon asset is present
         # The Windows and linux-desktop builds embed assets/mcp.ico at compile time via crates/tray.
         # Fail fast if the icon is missing rather than shipping a tray without an icon.
+        # shell: bash — the default on windows-latest is pwsh, which cannot parse `test -f ... || (...)`.
+        shell: bash
         run: test -f assets/mcp.ico || (echo "::error::assets/mcp.ico missing — tray builds will fail"; exit 1)
 
       - name: Build
