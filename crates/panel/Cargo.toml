@@ -9,6 +9,10 @@ build = "build.rs"
 [features]
 # Forwarded to the tray crate; see its manifest for why this is off by default.
 linux-tray = ["tray/linux-tray"]
+# Release builds on Windows are GUI executables (no console window). Enable
+# this to keep the console — for headless servers, service wrappers, or
+# reading logs from a terminal.
+console = []
 
 [[bin]]
 name = "mcpanel"

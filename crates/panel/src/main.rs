@@ -10,6 +10,13 @@
 
 #![forbid(unsafe_code)]
 #![allow(clippy::all, clippy::pedantic, clippy::nursery, clippy::restriction)]
+// Packaged Windows builds are GUI executables so launching mcpanel.exe does
+// not open a console window. Debug builds keep the console for `cargo run`
+// logs; `--features console` opts a release build back in.
+#![cfg_attr(
+    all(windows, not(debug_assertions), not(feature = "console")),
+    windows_subsystem = "windows"
+)]
 
 mod api;
 mod auth;
@@ -359,8 +366,13 @@ fn open_browser(url: &str) {
     // Replicate minimal cross-platform opening without shell.
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
+        // rundll32 is a console program; without this flag it allocates a
+        // visible console window even when the panel itself has none.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let _ = std::process::Command::new("rundll32.exe")
             .args(["url.dll,FileProtocolHandler", url])
+            .creation_flags(CREATE_NO_WINDOW)
             .spawn();
         return;
     }
