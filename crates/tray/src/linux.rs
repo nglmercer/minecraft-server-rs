@@ -119,7 +119,7 @@ fn run(
         if event.id() == &open_panel_id {
             open_panel(&panel_url);
         } else if event.id() == &reset_id {
-            let _ = reset_tx.send(reset_tx.borrow().wrapping_add(1));
+            reset_tx.send_modify(|v| *v = v.wrapping_add(1));
         } else if event.id() == &exit_id {
             let _ = exit_tx.send(true);
             quit_main_loop();

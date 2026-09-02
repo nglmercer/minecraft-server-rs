@@ -109,7 +109,7 @@ impl TrayHandle {
 
     /// Trigger a reset request programmatically (used by panel to simulate tray action).
     pub fn request_reset(&self) {
-        let _ = self.reset_tx.send(self.reset_tx.borrow().wrapping_add(1));
+        self.reset_tx.send_modify(|v| *v = v.wrapping_add(1));
     }
 
     /// Stop the native tray event loop, if this platform has one.

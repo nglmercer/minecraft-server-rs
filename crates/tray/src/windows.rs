@@ -219,7 +219,7 @@ impl ApplicationHandler<UserEvent> for TrayApplication {
             }) => self.open_panel(),
             UserEvent::Menu(event) if event.id() == &self.open_panel_id => self.open_panel(),
             UserEvent::Menu(event) if event.id() == &self.reset_id => {
-                let _ = self.reset_tx.send(self.reset_tx.borrow().wrapping_add(1));
+                self.reset_tx.send_modify(|v| *v = v.wrapping_add(1));
             }
             UserEvent::Menu(event) if event.id() == &self.exit_id => {
                 let _ = self.exit_tx.send(true);
