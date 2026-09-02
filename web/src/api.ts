@@ -274,6 +274,18 @@ export const api = {
   uploadBackupSecret: (content: string, credential_ref?: string) =>
     request<{ ok: boolean }>("/settings/backups/secret", { method: "POST", body: json({ content, credential_ref }) }),
 
+  startGoogleOAuth: (redirect_uri: string) =>
+    request<{ url: string; state: string }>("/settings/backups/google/oauth/start", {
+      method: "POST",
+      body: json({ redirect_uri }),
+    }),
+
+  googleOAuthStatus: () =>
+    request<{ connected: boolean; configured: boolean }>("/settings/backups/google/oauth/status"),
+
+  disconnectGoogleOAuth: () =>
+    request<{ ok: boolean }>("/settings/backups/google/oauth/disconnect", { method: "DELETE" }),
+
   serverBackupSettings: (id: string) => request<import("./types").ServerBackupSettings>(`/servers/${id}/backup-settings`),
 
   updateServerBackupSettings: (id: string, body: Record<string, unknown>) =>

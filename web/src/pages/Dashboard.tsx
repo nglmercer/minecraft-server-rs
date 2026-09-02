@@ -1,7 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import { api } from "../api";
 import { Button, Card, Field, Input, Select, StatCard, StatusPill, formatUptime } from "../components/ui";
-import { BackupStorage } from "../components/BackupStorage";
 import * as Icon from "../components/icons";
 import { useToast } from "../components/Toast";
 import { useT } from "../i18n";
@@ -98,8 +97,6 @@ export function Dashboard({
           />
         </div>
       )}
-
-      {user.admin && <BackupStorage />}
 
       {creating && (
         <CreateServer

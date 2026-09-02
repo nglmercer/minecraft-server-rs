@@ -64,6 +64,8 @@ pub struct AppState {
     backup_locks: RwLock<HashMap<String, Arc<Mutex<()>>>>,
     /// Short-lived recovery tokens for local password reset.
     pub recovery: RecoveryManager,
+    /// Pending Google OAuth states for CSRF protection (state -> pending).
+    pub google_oauth_states: RwLock<HashMap<String, crate::backups::google_oauth::OAuthPending>>,
 }
 
 impl AppState {
@@ -225,6 +227,7 @@ impl AppState {
             server_mutation_lock: Mutex::new(()),
             backup_locks: RwLock::new(HashMap::new()),
             recovery: RecoveryManager::default(),
+            google_oauth_states: RwLock::new(HashMap::new()),
         }))
     }
 

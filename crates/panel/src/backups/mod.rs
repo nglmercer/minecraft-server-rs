@@ -5,6 +5,7 @@
 //! trait and registering it in the factory.
 
 pub mod google_drive;
+pub mod google_oauth;
 pub mod local;
 pub mod mock;
 pub mod provider;

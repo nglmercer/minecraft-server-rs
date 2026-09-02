@@ -33,6 +33,7 @@ export const en = {
     title: "Minecraft Panel",
     accounts: "Accounts",
     playit: "Playit",
+    backups: "Backups",
     signOut: "Sign out",
     admin: "admin",
     language: "Language",
@@ -274,6 +275,15 @@ export const en = {
     mustStop: "Stop the server before restoring",
     runningWarning:
       "Restoring is disabled while the server is running — unpacking a world under a live JVM corrupts it. Stop the server first.",
+    storageTitle: "Backup Storage",
+    storageSubtitle: "Global defaults — used when a server inherits its settings (default is local).",
+    perServerTitle: "Backup storage for this server",
+    useGlobal: "Use global settings",
+    providerLabel: "Backup provider",
+    maxBackupsLabel: "Maximum backups",
+    maxAgeLabel: "Maximum age (days) — empty = disabled",
+    oauthHint: "Uses the global Google OAuth connection; folder can be overridden per server.",
+    perServerHint: "When inherited, this server uses the global provider (local by default). Custom settings override global only for this server.",
   },
 
   settings: {

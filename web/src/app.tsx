@@ -3,6 +3,7 @@ import { api } from "./api";
 import { Button, Select } from "./components/ui";
 import * as Icon from "./components/icons";
 import { LANGUAGES, useI18n, type Language } from "./i18n";
+import { BackupsSettings } from "./pages/BackupsSettings";
 import { Dashboard } from "./pages/Dashboard";
 import { Login } from "./pages/Login";
 import { Playit } from "./pages/Playit";
@@ -17,13 +18,15 @@ type Route =
   | { page: "dashboard" }
   | { page: "server"; id: string }
   | { page: "users" }
-  | { page: "playit" };
+  | { page: "playit" }
+  | { page: "backups" };
 
 function readRoute(): Route {
   const server = location.hash.match(/^#\/servers\/([^/]+)/);
   if (server) return { page: "server", id: server[1] };
   if (location.hash.startsWith("#/users")) return { page: "users" };
   if (location.hash.startsWith("#/playit")) return { page: "playit" };
+  if (location.hash.startsWith("#/backups")) return { page: "backups" };
   return { page: "dashboard" };
 }
 
@@ -31,6 +34,7 @@ function hashFor(route: Route): string {
   if (route.page === "server") return `#/servers/${route.id}`;
   if (route.page === "users") return "#/users";
   if (route.page === "playit") return "#/playit";
+  if (route.page === "backups") return "#/backups";
   return "#/";
 }
 
@@ -170,6 +174,17 @@ export function App() {
                   {t("nav.playit")}
                 </span>
               </button>
+              <button
+                class={`text-sm transition-colors ${
+                  route.page === "backups" ? "text-fg" : "text-fg-muted hover:text-fg"
+                }`}
+                onClick={() => navigate({ page: "backups" })}
+              >
+                <span class="inline-flex items-center gap-1.5">
+                  <Icon.Archive size={15} />
+                  {t("nav.backups")}
+                </span>
+              </button>
             </>
           )}
         </div>
@@ -204,6 +219,7 @@ export function App() {
         )}
         {route.page === "users" && <Users currentUser={user.username} />}
         {route.page === "playit" && <Playit />}
+        {route.page === "backups" && <BackupsSettings />}
         {route.page === "dashboard" && (
           <Dashboard user={user} onOpen={(id) => navigate({ page: "server", id })} />
         )}

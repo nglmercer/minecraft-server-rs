@@ -11,6 +11,7 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::RwLock;
 use tokio_util::io::StreamReader;
 
+use crate::backups::google_oauth;
 use crate::backups::provider::{
     BackupArtifact, BackupProvider, BackupStream, ProviderHealth, RemoteBackup,
 };
@@ -57,7 +58,22 @@ impl GoogleDriveBackupProvider {
         serde_json::from_slice(&bytes).map_err(|e| ApiError::Internal(e.into()))
     }
 
+    async fn oauth_access_token(&self) -> Option<String> {
+        // Try OAuth refresh token if present; silent fallback to service-account
+        if google_oauth::is_connected(&self.data_dir).await {
+            if let Ok(token) = google_oauth::get_access_token(&self.data_dir).await {
+                return Some(token);
+            }
+        }
+        None
+    }
+
     async fn fetch_access_token(&self) -> ApiResult<String> {
+        // Fast path: OAuth user-consent token (preferred for desktop)
+        if let Some(token) = self.oauth_access_token().await {
+            return Ok(token);
+        }
+        // Cache for service-account JWT tokens
         {
             let cache = self.token_cache.read().await;
             if let Some(entry) = cache.as_ref() {

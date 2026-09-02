@@ -146,6 +146,8 @@ export interface BackupStorageSettings {
     folder_id: string;
     credentials_present: boolean;
     configured: boolean;
+    oauth_connected?: boolean;
+    oauth_configured?: boolean;
   } | null;
 }
 
@@ -157,6 +159,8 @@ export interface ServerBackupSettings {
     folder_id: string;
     credentials_present: boolean;
     configured: boolean;
+    oauth_connected?: boolean;
+    oauth_configured?: boolean;
   } | null;
 }
 

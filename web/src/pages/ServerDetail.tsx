@@ -5,6 +5,7 @@ import { Backups } from "../components/Backups";
 import { Console } from "../components/Console";
 import { Files } from "../components/Files";
 import { Mods } from "../components/Mods";
+import { ServerBackupSettings } from "../components/ServerBackupSettings";
 import {
   Banner,
   Button,
@@ -296,7 +297,12 @@ export function ServerDetail({
         {tab === "console" && <Console serverId={id} onStatus={onStatus} onProgress={onProgress} />}
         {tab === "files" && <Files serverId={id} />}
         {tab === "plugins" && <Mods server={server} />}
-        {tab === "backups" && <Backups serverId={id} status={server.status} />}
+        {tab === "backups" && (
+          <div class="space-y-6">
+            {user.admin && <ServerBackupSettings serverId={id} />}
+            <Backups serverId={id} status={server.status} />
+          </div>
+        )}
         {tab === "settings" && (
           <Settings
             server={server}
