@@ -124,6 +124,18 @@ impl AppState {
     ) -> Result<Arc<Self>> {
         limits.validate()?;
         let data_dir = data_dir.into();
+        // On Windows there is no kernel-level process sandbox (no bwrap, no
+        // sandbox-exec), so the panel would always refuse to start Minecraft
+        // unless the operator explicitly passes --allow-unsandboxed-servers.
+        // For a desktop application this is an unnecessary hurdle: Windows users
+        // are unlikely to run the panel from a CLI and would have no way to
+        // discover the flag. We therefore implicitly allow unsandboxed execution
+        // on Windows; on Linux/macOS the explicit flag still applies.
+        let allow_unsandboxed_servers = if cfg!(windows) {
+            true
+        } else {
+            allow_unsandboxed_servers
+        };
         let sandbox_policy = guardian::sandbox::SandboxPolicy::new(allow_unsandboxed_servers);
         let trusted_proxies = Arc::new(trusted_proxies.into_iter().collect::<HashSet<_>>());
         tokio::fs::create_dir_all(&data_dir)
