@@ -148,9 +148,11 @@ mod tests {
 
     #[tokio::test]
     async fn reset_signal_increments_on_request() {
-        // When linux-tray is enabled, GTK can only be initialized once per process.
-        // Test the underlying watch logic directly in that configuration.
-        if cfg!(all(target_os = "linux", feature = "linux-tray")) {
+        // winit/GTK event loops can only be created once per process. Testing
+        // the tray backend twice in the same process panics with
+        // "EventLoop can't be recreated" (Windows) or GTK init errors (Linux).
+        // For those platforms test the underlying watch logic directly.
+        if cfg!(windows) || cfg!(all(target_os = "linux", feature = "linux-tray")) {
             let (tx, mut rx) = watch::channel(0u64);
             assert_eq!(*rx.borrow(), 0);
             tx.send_modify(|v| *v = v.wrapping_add(1));
@@ -165,6 +167,7 @@ mod tests {
         let handle = match start(cfg) {
             Ok(h) => h,
             Err(e) if e.to_string().contains("no display") => return,
+            Err(e) if e.to_string().contains("EventLoop") => return,
             Err(e) => panic!("tray should start: {e}"),
         };
         let mut rx = handle.reset_signal();
@@ -180,14 +183,15 @@ mod tests {
 
     #[tokio::test]
     async fn exit_signal_fires_on_shutdown() {
-        if cfg!(all(target_os = "linux", feature = "linux-tray")) {
-            // GTK already tested above; avoid double init in same process.
+        if cfg!(windows) || cfg!(all(target_os = "linux", feature = "linux-tray")) {
+            // Avoid double EventLoop/GTK init in same process (see above).
             return;
         }
         let cfg = TrayConfig::new("http://127.0.0.1:8080");
         let handle = match start(cfg) {
             Ok(h) => h,
             Err(e) if e.to_string().contains("no display") => return,
+            Err(e) if e.to_string().contains("EventLoop") => return,
             Err(e) => panic!("tray should start: {e}"),
         };
         let mut rx = handle.exit_signal();
