@@ -59,6 +59,7 @@ pub fn generate_token() -> String {
 }
 
 /// A generated password that is readable enough to retype once.
+#[cfg(test)]
 pub fn generate_password() -> String {
     const ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     let mut bytes = [0u8; 16];

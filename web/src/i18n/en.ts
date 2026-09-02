@@ -45,8 +45,30 @@ export const en = {
     password: "Password",
     signIn: "Sign in",
     signingIn: "Signing in…",
-    firstRun: "First run? The initial password was printed in the panel's console.",
+    firstRun: "First run? Create your administrator account.",
     failed: "Login failed. Check the username and password.",
+  },
+
+  setup: {
+    heading: "MCP Panel Setup",
+    subtitle: "Create your administrator account.",
+    confirm: "Confirm password",
+    create: "Create Administrator",
+    mismatch: "Passwords do not match.",
+    failed: "Setup failed.",
+    alreadyDone: "Setup has already been completed.",
+    goLogin: "Continue to Login",
+  },
+
+  recovery: {
+    heading: "Reset Administrator Password",
+    subtitle: "Choose a new password.",
+    newPassword: "New password",
+    reset: "Reset Password",
+    missingToken: "Missing or invalid recovery token. Use Reset Admin Password from the tray.",
+    failed: "Recovery failed. The token may be invalid or expired.",
+    success: "Password reset successfully.",
+    goLogin: "Continue to Login",
   },
 
   dashboard: {

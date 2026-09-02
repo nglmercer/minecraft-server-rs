@@ -18,6 +18,7 @@ mod error;
 mod filesystem;
 mod limits;
 mod metrics;
+mod recovery;
 mod state;
 mod store;
 mod tickets;
@@ -41,7 +42,6 @@ use tower_http::trace::TraceLayer;
 use crate::limits::ResourceLimits;
 use crate::state::AppState;
 use crate::state::PlayitMode;
-use crate::store::User;
 use tray::{TrayConfig, TrayHandle};
 
 /// Command line options.
@@ -210,7 +210,10 @@ async fn main() -> Result<()> {
     .await?;
 
     let server_result = async {
-        ensure_admin(&state).await?;
+        // No automatic admin creation. First-run setup is via browser /setup.
+        if state.store.read().await.users.is_empty() {
+            tracing::info!("no users found; panel is in setup mode at /setup");
+        }
 
         let mut app = Router::new()
             .nest("/api", api::router_with_limits(state.limits))
@@ -246,7 +249,8 @@ async fn main() -> Result<()> {
         let local_addr = listener
             .local_addr()
             .context("reading the panel listener address")?;
-        let tray = match tray::start(TrayConfig::new(panel_url(local_addr))) {
+        let panel_url_str = panel_url(local_addr);
+        let tray = match tray::start(TrayConfig::new(panel_url_str.clone())) {
             Ok(tray) => Some(tray),
             Err(error) => {
                 tracing::warn!(error = %error, "system tray is unavailable; the panel will continue without it");
@@ -254,11 +258,52 @@ async fn main() -> Result<()> {
             }
         };
         let tray_exit = tray.as_ref().map(TrayHandle::exit_signal);
+        let tray_reset = tray.as_ref().map(TrayHandle::reset_signal);
 
         tracing::info!(
             "panel listening on http://{} (use a TLS reverse proxy for remote access)",
             args.bind
         );
+
+        // First-run desktop experience: open setup automatically when uninitialized.
+        if state.store.read().await.users.is_empty() {
+            let setup_url = format!("{}/setup", panel_url_str);
+            tracing::info!("first run: opening setup page");
+            open_browser(&setup_url);
+        }
+
+        // Handle tray password recovery requests.
+        let recovery_state = Arc::clone(&state);
+        let recovery_panel_url = panel_url_str.clone();
+        let recovery_task = tray_reset.map(|mut rx| {
+            tokio::spawn(async move {
+                let mut last = *rx.borrow();
+                loop {
+                    if rx.changed().await.is_err() {
+                        break;
+                    }
+                    let current = *rx.borrow();
+                    if current == last {
+                        continue;
+                    }
+                    last = current;
+                    // Find administrator to reset (first admin).
+                    let admin = {
+                        let data = recovery_state.store.read().await;
+                        data.users.iter().find(|u| u.admin).cloned()
+                    };
+                    let Some(admin) = admin else {
+                        tracing::warn!("password recovery requested but no administrator exists");
+                        continue;
+                    };
+                    let token = recovery_state.recovery.generate(admin.username.clone());
+                    tracing::info!(user = %admin.username, "password recovery requested");
+                    let url = format!("{}/recovery#{}", recovery_panel_url, token);
+                    // Never log token or url with token.
+                    open_browser(&url);
+                }
+            })
+        });
 
         let serve_result = axum::serve(
             listener,
@@ -268,6 +313,9 @@ async fn main() -> Result<()> {
         .await
         .context("server error");
 
+        if let Some(task) = recovery_task {
+            task.abort();
+        }
         if let Some(tray) = tray {
             tray.shutdown();
         }
@@ -285,39 +333,42 @@ async fn main() -> Result<()> {
     server_result
 }
 
-/// Create the initial admin account when the panel has no users yet.
-async fn ensure_admin(state: &Arc<AppState>) -> Result<()> {
-    let password = auth::generate_password();
-    let hash = auth::hash_password(&password)
-        .map_err(|e| anyhow::anyhow!("hashing the initial password failed: {e}"))?;
-
-    let created = state
-        .store
-        .update(|data| {
-            if !data.users.is_empty() {
-                return false;
-            }
-            data.users.push(User {
-                username: "admin".into(),
-                password_hash: hash,
-                admin: true,
-                servers: Vec::new(),
-            });
-            true
-        })
-        .await?;
-
-    if !created {
-        return Ok(());
+fn open_browser(url: &str) {
+    // Use tray helper when available, otherwise direct spawn.
+    // Replicate minimal cross-platform opening without shell.
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("rundll32.exe")
+            .args(["url.dll,FileProtocolHandler", url])
+            .spawn();
+        return;
     }
-
-    // Printed exactly once, and never recoverable afterwards.
-    println!("\n  Created the initial administrator account:\n");
-    println!("      username: admin");
-    println!("      password: {password}\n");
-    println!("  Change it from the panel; this is the only time it is shown.\n");
-
-    Ok(())
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    {
+        let candidates: [&[&str]; 4] = [
+            &["xdg-open", url],
+            &["gio", "open", url],
+            &["kde-open5", url],
+            &["sensible-browser", url],
+        ];
+        for candidate in candidates {
+            if std::process::Command::new(candidate[0])
+                .args(&candidate[1..])
+                .spawn()
+                .is_ok()
+            {
+                return;
+            }
+        }
+        tracing::warn!("could not open browser for setup/recovery");
+        return;
+    }
+    #[cfg(not(any(windows, all(target_os = "linux", not(target_env = "musl")))))]
+    {
+        // Fallback: try via `xdg-open` or warn.
+        let _ = url;
+        tracing::warn!("browser opening not supported on this platform");
+    }
 }
 
 /// Resolve on Ctrl-C, or on SIGTERM under a service manager.

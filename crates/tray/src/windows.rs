@@ -26,11 +26,15 @@ pub(crate) struct Backend {
 }
 
 impl Backend {
-    pub(crate) fn start(config: TrayConfig, exit_tx: watch::Sender<bool>) -> io::Result<Self> {
+    pub(crate) fn start(
+        config: TrayConfig,
+        exit_tx: watch::Sender<bool>,
+        reset_tx: watch::Sender<u64>,
+    ) -> io::Result<Self> {
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let thread = std::thread::Builder::new()
             .name("mcpanel-tray".into())
-            .spawn(move || run(config, exit_tx, ready_tx))?;
+            .spawn(move || run(config, exit_tx, reset_tx, ready_tx))?;
 
         match ready_rx.recv() {
             Ok(Ok(proxy)) => Ok(Self {
@@ -69,6 +73,7 @@ enum UserEvent {
 fn run(
     config: TrayConfig,
     exit_tx: watch::Sender<bool>,
+    reset_tx: watch::Sender<u64>,
     ready_tx: SyncSender<Result<EventLoopProxy<UserEvent>, String>>,
 ) {
     let mut event_loop_builder = EventLoop::<UserEvent>::with_user_event();
@@ -103,13 +108,16 @@ fn run(
     }));
 
     let open_panel_id = tray_menu.open_panel.id().clone();
+    let reset_id = tray_menu.reset.id().clone();
     let exit_id = tray_menu.exit.id().clone();
     let mut application = TrayApplication {
         panel_url: config.panel_url,
         exit_tx,
+        reset_tx,
         tray_menu: Some(tray_menu),
         tray_icon: None,
         open_panel_id,
+        reset_id,
         exit_id,
         proxy,
         ready_tx: Some(ready_tx),
@@ -124,9 +132,11 @@ fn run(
 struct TrayApplication {
     panel_url: String,
     exit_tx: watch::Sender<bool>,
+    reset_tx: watch::Sender<u64>,
     tray_menu: Option<menu::TrayMenu>,
     tray_icon: Option<TrayIcon>,
     open_panel_id: tray_icon::menu::MenuId,
+    reset_id: tray_icon::menu::MenuId,
     exit_id: tray_icon::menu::MenuId,
     proxy: EventLoopProxy<UserEvent>,
     ready_tx: Option<SyncSender<Result<EventLoopProxy<UserEvent>, String>>>,
@@ -208,6 +218,9 @@ impl ApplicationHandler<UserEvent> for TrayApplication {
                 ..
             }) => self.open_panel(),
             UserEvent::Menu(event) if event.id() == &self.open_panel_id => self.open_panel(),
+            UserEvent::Menu(event) if event.id() == &self.reset_id => {
+                let _ = self.reset_tx.send(self.reset_tx.borrow().wrapping_add(1));
+            }
             UserEvent::Menu(event) if event.id() == &self.exit_id => {
                 let _ = self.exit_tx.send(true);
                 event_loop.exit();

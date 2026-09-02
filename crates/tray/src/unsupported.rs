@@ -11,8 +11,12 @@ use crate::TrayConfig;
 pub(crate) struct Backend;
 
 impl Backend {
-    pub(crate) fn start(config: TrayConfig, exit_tx: watch::Sender<bool>) -> io::Result<Self> {
-        let _ = (config, exit_tx);
+    pub(crate) fn start(
+        config: TrayConfig,
+        exit_tx: watch::Sender<bool>,
+        reset_tx: watch::Sender<u64>,
+    ) -> io::Result<Self> {
+        let _ = (config, exit_tx, reset_tx);
         Ok(Self)
     }
 

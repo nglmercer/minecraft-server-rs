@@ -14,6 +14,7 @@ use crate::auth::{LoginLimiter, Sessions};
 use crate::error::ApiError;
 use crate::limits::ResourceLimits;
 use crate::metrics::Metrics;
+use crate::recovery::RecoveryManager;
 use crate::store::{PanelData, ServerRecord, Store, StoredBackup};
 use crate::tickets::Tickets;
 
@@ -61,6 +62,8 @@ pub struct AppState {
     pub server_mutation_lock: Mutex<()>,
     /// Per-server backup locks to serialize creation/deletion/restore/retention per server.
     backup_locks: RwLock<HashMap<String, Arc<Mutex<()>>>>,
+    /// Short-lived recovery tokens for local password reset.
+    pub recovery: RecoveryManager,
 }
 
 impl AppState {
@@ -221,6 +224,7 @@ impl AppState {
             trusted_proxies,
             server_mutation_lock: Mutex::new(()),
             backup_locks: RwLock::new(HashMap::new()),
+            recovery: RecoveryManager::default(),
         }))
     }
 

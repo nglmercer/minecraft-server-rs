@@ -27,7 +27,11 @@ pub(crate) struct Backend {
 }
 
 impl Backend {
-    pub(crate) fn start(config: TrayConfig, exit_tx: watch::Sender<bool>) -> io::Result<Self> {
+    pub(crate) fn start(
+        config: TrayConfig,
+        exit_tx: watch::Sender<bool>,
+        reset_tx: watch::Sender<u64>,
+    ) -> io::Result<Self> {
         // A headless session (a server, a CI runner, an SSH login) has no tray
         // to attach to. The caller logs a warning and continues without one.
         if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
@@ -39,7 +43,7 @@ impl Backend {
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let thread = std::thread::Builder::new()
             .name("mcpanel-tray".into())
-            .spawn(move || run(config, exit_tx, ready_tx))?;
+            .spawn(move || run(config, exit_tx, reset_tx, ready_tx))?;
 
         match ready_rx.recv() {
             Ok(Ok(())) => Ok(Self {
@@ -81,7 +85,12 @@ fn quit_main_loop() {
     });
 }
 
-fn run(config: TrayConfig, exit_tx: watch::Sender<bool>, ready_tx: SyncSender<Result<(), String>>) {
+fn run(
+    config: TrayConfig,
+    exit_tx: watch::Sender<bool>,
+    reset_tx: watch::Sender<u64>,
+    ready_tx: SyncSender<Result<(), String>>,
+) {
     // GTK records this thread as its main thread, so every tray and menu widget
     // below has to be created here, after this call.
     if let Err(error) = gtk::init() {
@@ -101,6 +110,7 @@ fn run(config: TrayConfig, exit_tx: watch::Sender<bool>, ready_tx: SyncSender<Re
     };
 
     let open_panel_id = tray_menu.open_panel.id().clone();
+    let reset_id = tray_menu.reset.id().clone();
     let exit_id = tray_menu.exit.id().clone();
     let panel_url = config.panel_url;
     // AppIndicator delivers no click events of its own, so the menu is the only
@@ -108,6 +118,8 @@ fn run(config: TrayConfig, exit_tx: watch::Sender<bool>, ready_tx: SyncSender<Re
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
         if event.id() == &open_panel_id {
             open_panel(&panel_url);
+        } else if event.id() == &reset_id {
+            let _ = reset_tx.send(reset_tx.borrow().wrapping_add(1));
         } else if event.id() == &exit_id {
             let _ = exit_tx.send(true);
             quit_main_loop();

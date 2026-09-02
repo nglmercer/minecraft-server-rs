@@ -8,7 +8,9 @@ pub mod console;
 pub mod files;
 pub mod mods;
 pub mod playit;
+pub mod recovery;
 pub mod servers;
+pub mod setup;
 pub mod users;
 
 use axum::extract::DefaultBodyLimit;
@@ -38,6 +40,8 @@ pub fn router_with_limits(limits: ResourceLimits) -> Router<Arc<AppState>> {
 
     Router::new()
         .nest("/auth", auth::router())
+        .merge(setup::router())
+        .merge(recovery::router())
         .merge(servers::collection_router())
         .nest(
             "/servers",

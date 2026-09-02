@@ -6,7 +6,9 @@ import { LANGUAGES, useI18n, type Language } from "./i18n";
 import { Dashboard } from "./pages/Dashboard";
 import { Login } from "./pages/Login";
 import { Playit } from "./pages/Playit";
+import { Recovery } from "./pages/Recovery";
 import { ServerDetail } from "./pages/ServerDetail";
+import { Setup } from "./pages/Setup";
 import { Users } from "./pages/Users";
 import type { User } from "./types";
 
@@ -71,13 +73,28 @@ function LanguagePicker() {
   );
 }
 
+function isSetupPath() {
+  return location.pathname === "/setup" || location.hash === "#/setup";
+}
+function isRecoveryPath() {
+  return location.pathname === "/recovery" || location.hash.startsWith("#/recovery");
+}
+
 export function App() {
   const { t } = useI18n();
   const [user, setUser] = useState<User | null>(null);
   const [ready, setReady] = useState(false);
   const [route, navigate] = useRoute();
 
+  // Intercept path-based setup/recovery before auth check.
+  const setupPath = isSetupPath();
+  const recoveryPath = isRecoveryPath();
+
   useEffect(() => {
+    if (setupPath || recoveryPath) {
+      setReady(true);
+      return;
+    }
     // The HttpOnly cookie is intentionally invisible to JavaScript, so verify
     // the browser session directly on every page load.
     api
@@ -95,6 +112,13 @@ export function App() {
 
   if (!ready) {
     return <div class="grid h-full place-items-center text-fg-muted">{t("common.loading")}</div>;
+  }
+
+  if (setupPath) {
+    return <Setup onDone={() => (location.href = "/")} />;
+  }
+  if (recoveryPath) {
+    return <Recovery onDone={() => (location.href = "/")} />;
   }
 
   if (!user) {

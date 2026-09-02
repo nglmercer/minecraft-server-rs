@@ -47,9 +47,30 @@ export const es: Dictionary = {
     password: "Contraseña",
     signIn: "Iniciar sesión",
     signingIn: "Iniciando sesión…",
-    firstRun:
-      "¿Primera vez? La contraseña inicial se imprimió en la consola del panel.",
+    firstRun: "¿Primera vez? Crea tu cuenta de administrador.",
     failed: "Error al iniciar sesión. Revisa el usuario y la contraseña.",
+  },
+
+  setup: {
+    heading: "Configuración del Panel",
+    subtitle: "Crea tu cuenta de administrador.",
+    confirm: "Confirmar contraseña",
+    create: "Crear Administrador",
+    mismatch: "Las contraseñas no coinciden.",
+    failed: "Error en la configuración.",
+    alreadyDone: "La configuración ya se completó.",
+    goLogin: "Ir al inicio de sesión",
+  },
+
+  recovery: {
+    heading: "Restablecer Contraseña",
+    subtitle: "Elige una nueva contraseña.",
+    newPassword: "Nueva contraseña",
+    reset: "Restablecer Contraseña",
+    missingToken: "Falta token de recuperación. Usa Restablecer Contraseña en la bandeja.",
+    failed: "Error al restablecer. El token puede ser inválido o expirado.",
+    success: "Contraseña restablecida correctamente.",
+    goLogin: "Ir al inicio de sesión",
   },
 
   dashboard: {

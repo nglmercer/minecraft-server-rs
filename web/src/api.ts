@@ -334,6 +334,14 @@ export const api = {
   javas: () => request<JavaInstall[]>("/catalog/javas"),
 
   system: () => request<SystemStats>("/system"),
+
+  setupStatus: () => request<{ needs_setup: boolean }>("/setup/status"),
+
+  setup: (body: { username: string; password: string; confirm: string }) =>
+    request<{ ok: boolean }>("/setup", { method: "POST", body: json(body) }),
+
+  recoveryReset: (body: { token: string; password: string; confirm: string }) =>
+    request<{ ok: boolean }>("/recovery/reset", { method: "POST", body: json(body) }),
 };
 
 /** Open the console socket with a short-lived one-use ticket. */
