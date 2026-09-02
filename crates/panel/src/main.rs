@@ -12,9 +12,10 @@
 #![allow(clippy::all, clippy::pedantic, clippy::nursery, clippy::restriction)]
 // Packaged Windows builds are GUI executables so launching mcpanel.exe does
 // not open a console window. Debug builds keep the console for `cargo run`
-// logs; `--features console` opts a release build back in.
+// logs; build with MCPANEL_CONSOLE=1 to keep it in a release build (see
+// build.rs).
 #![cfg_attr(
-    all(windows, not(debug_assertions), not(feature = "console")),
+    all(windows, not(debug_assertions), not(mcpanel_console)),
     windows_subsystem = "windows"
 )]
 

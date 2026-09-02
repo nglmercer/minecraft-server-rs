@@ -7,6 +7,17 @@ use std::path::PathBuf;
 /// cannot `cargo build` at all — it dies on a confusing macro error long before
 /// reaching the "frontend not built" page that handles exactly this case.
 fn main() {
+    // Windows release builds are GUI executables (no console window). Setting
+    // MCPANEL_CONSOLE=1 keeps the console, for headless servers or reading
+    // logs from a terminal. A build-script flag rather than a Cargo feature
+    // so common invocations like `--all-features` cannot silently re-add the
+    // console window.
+    if std::env::var_os("MCPANEL_CONSOLE").is_some_and(|value| !value.is_empty() && value != "0") {
+        println!("cargo:rustc-cfg=mcpanel_console");
+    }
+    println!("cargo:rerun-if-env-changed=MCPANEL_CONSOLE");
+    println!("cargo::rustc-check-cfg=cfg(mcpanel_console)");
+
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets this"));
     let dist = manifest.join("../../web/dist");
 
