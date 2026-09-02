@@ -93,11 +93,20 @@ jobs:
       - name: Install the musl toolchain
         if: endsWith(matrix.target, '-musl')
         # ring compiles C, and needs a musl-targeting compiler to do it.
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft*.list
+          sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Install the Linux desktop tray dependencies
         if: matrix.features == 'linux-tray'
-        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev
+        # packages.microsoft.com intermittently answers 403 on the Azure
+        # mirror, which aborts `apt-get update` with exit 100 before any
+        # package is installed. Everything this step needs lives in the
+        # Ubuntu archives, so drop Microsoft's source list before updating.
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft*.list
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev
 
       - name: Verify tray icon asset is present
         # The Windows and linux-desktop builds embed assets/mcp.ico at compile time via crates/tray.

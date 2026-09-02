@@ -49,8 +49,14 @@ jobs:
       - name: Install the Linux desktop tray dependencies
         # Only the `linux-tray` steps below need these; the default build links
         # none of them, which is what lets the release binary run on a server.
+        # packages.microsoft.com intermittently answers 403 on the Azure mirror,
+        # which aborts `apt-get update` with exit 100; drop its source list
+        # first since everything needed here comes from the Ubuntu archives.
         if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft*.list
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev
 
       - name: Format
         # Checked on one platform only: the result cannot differ, and running it
