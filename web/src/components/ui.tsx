@@ -1,6 +1,7 @@
 import type { ComponentChildren, JSX } from "preact";
 import { useT } from "../i18n";
 import { Tooltip } from "./Tooltip";
+import * as Icon from "./icons";
 import type { Status } from "../types";
 
 /** Colour for each lifecycle state. The label comes from the dictionary. */
@@ -154,12 +155,46 @@ export function Select(props: JSX.IntrinsicElements["select"]) {
   return <select {...rest} class={`${CONTROL} ${extra ?? ""}`} />;
 }
 
-export function Banner({ kind, children }: { kind: "error" | "info"; children: ComponentChildren }) {
-  const styles =
-    kind === "error"
-      ? "border-red-500/40 bg-red-500/10 text-red-200"
-      : "border-sky-500/40 bg-sky-500/10 text-sky-100";
-  return <div class={`rounded-lg border px-4 py-3 text-sm ${styles}`}>{children}</div>;
+export function Banner({
+  kind,
+  children,
+}: {
+  kind: "error" | "info" | "warn" | "success";
+  children: ComponentChildren;
+}) {
+  const styles = {
+    error: "border-red-500/40 bg-red-500/10 text-red-200",
+    info: "border-sky-500/40 bg-sky-500/10 text-sky-100",
+    warn: "border-amber-500/40 bg-amber-500/10 text-amber-200",
+    success: "border-emerald-500/30 bg-emerald-500/10 text-emerald-200",
+  }[kind];
+  return <div class={`rounded-lg border px-4 py-3 text-sm leading-relaxed ${styles}`}>{children}</div>;
+}
+
+/**
+ * An unobtrusive information indicator that reveals helpful guidance on hover and focus.
+ */
+export function InfoTooltip({
+  text,
+  side = "top",
+  align = "center",
+}: {
+  text: string;
+  side?: "top" | "bottom";
+  align?: "center" | "start" | "end";
+}) {
+  return (
+    <Tooltip label={text} side={side} align={align}>
+      <span
+        class="inline-flex cursor-help items-center text-fg-muted/70 transition-colors hover:text-fg focus:text-fg focus:outline-none"
+        tabIndex={0}
+        role="note"
+        aria-label={text}
+      >
+        <Icon.Info size={14} />
+      </span>
+    </Tooltip>
+  );
 }
 
 /**

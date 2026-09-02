@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { api } from "../api";
 import { useToast } from "./Toast";
-import { Button, Card, Field, Input, Select } from "./ui";
+import { Banner, Button, Card, Field, InfoTooltip, Input, Select } from "./ui";
+import * as Icon from "./icons";
 import { useT } from "../i18n";
 
 export function ServerBackupSettings({ serverId }: { serverId: string }) {
@@ -45,7 +46,7 @@ export function ServerBackupSettings({ serverId }: { serverId: string }) {
         setFolderId("");
       }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "failed to load server backup settings");
+      toast.error(e instanceof Error ? e.message : t("errors.generic"));
     } finally {
       setLoading(false);
     }
@@ -73,10 +74,10 @@ export function ServerBackupSettings({ serverId }: { serverId: string }) {
             google_drive: provider === "google_drive" ? { folder_id: folderId } : undefined,
           };
       await api.updateServerBackupSettings(serverId, body);
-      toast.success("Server backup settings saved");
+      toast.success(t("backups.perServerSaved"));
       await load();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "save failed");
+      toast.error(e instanceof Error ? e.message : t("errors.generic"));
     } finally {
       setBusy(false);
     }
@@ -88,7 +89,7 @@ export function ServerBackupSettings({ serverId }: { serverId: string }) {
       const redirectUri = `${location.origin}/api/settings/backups/google/oauth/callback`;
       const { url } = await api.startGoogleOAuth(redirectUri);
       window.open(url, "_blank", "width=620,height=720,popup=1");
-      toast.success("Opened Google consent — complete in the new window");
+      toast.success(t("backups.consentOpened"));
       let attempts = 0;
       if (pollRef.current) window.clearInterval(pollRef.current);
       pollRef.current = window.setInterval(async () => {
@@ -100,7 +101,7 @@ export function ServerBackupSettings({ serverId }: { serverId: string }) {
             if (pollRef.current) window.clearInterval(pollRef.current);
             pollRef.current = null;
             setOauthBusy(false);
-            toast.success("Google Drive connected");
+            toast.success(t("backups.driveConnected"));
             await load();
           } else if (attempts > 30) {
             if (pollRef.current) window.clearInterval(pollRef.current);
@@ -110,7 +111,7 @@ export function ServerBackupSettings({ serverId }: { serverId: string }) {
         } catch {}
       }, 2000);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "failed to start OAuth");
+      toast.error(e instanceof Error ? e.message : t("errors.generic"));
       setOauthBusy(false);
     }
   }
@@ -119,10 +120,10 @@ export function ServerBackupSettings({ serverId }: { serverId: string }) {
     setOauthBusy(true);
     try {
       await api.disconnectGoogleOAuth();
-      toast.success("Google Drive disconnected");
+      toast.success(t("backups.driveDisconnected"));
       await load();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "disconnect failed");
+      toast.error(e instanceof Error ? e.message : t("errors.generic"));
     } finally {
       setOauthBusy(false);
     }
@@ -132,15 +133,21 @@ export function ServerBackupSettings({ serverId }: { serverId: string }) {
     setTesting(true);
     try {
       const res = await api.testBackupSettings();
-      toast.success(res.message || "Connection ok");
+      toast.success(res.message || t("backups.connectionOk"));
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "test failed");
+      toast.error(e instanceof Error ? e.message : t("errors.generic"));
     } finally {
       setTesting(false);
     }
   }
 
-  if (loading) return <Card>Loading…</Card>;
+  if (loading) {
+    return (
+      <Card>
+        <p class="text-sm text-fg-muted">{t("common.loading")}</p>
+      </Card>
+    );
+  }
 
   const isGDrive = provider === "google_drive";
   const oauthConnected = !!oauth?.connected;
@@ -149,87 +156,132 @@ export function ServerBackupSettings({ serverId }: { serverId: string }) {
   return (
     <Card
       title={
-        <span class="flex items-center gap-2">
-          <span class="grid size-7 place-items-center rounded-lg bg-ink-700 text-fg-muted">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
-              <path d="M14 2v6h6M10 13H8M16 17H8M13 13h1" />
-            </svg>
+        <span class="flex items-center gap-2.5">
+          <Icon.Archive size={16} class="text-accent" />
+          <span>{t("backups.perServerTitle")}</span>
+          <span
+            class={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+              inheritGlobal
+                ? "bg-ink-700 text-fg-muted"
+                : isGDrive
+                  ? "bg-sky-500/20 text-sky-300"
+                  : "bg-accent/20 text-accent"
+            }`}
+          >
+            {inheritGlobal
+              ? t("backups.inheritingLocal")
+              : isGDrive
+                ? t("backups.googleDrive")
+                : t("backups.local")}
           </span>
-          {t("backups.perServerTitle")}
-          <span class={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest ${inheritGlobal ? "bg-ink-700 text-fg-muted" : isGDrive ? "bg-sky-500/20 text-sky-300" : "bg-accent/20 text-accent"}`}>
-            {inheritGlobal ? "Inheriting • Local" : isGDrive ? "Google Drive" : "Local"}
-          </span>
+          <InfoTooltip text={t("backups.whyLocalTooltip")} />
         </span>
       }
     >
-      <div class="space-y-5">
+      <div class="space-y-4">
         {/* Inherit toggle */}
-        <label class="flex items-start gap-3 rounded-lg border border-ink-700 bg-ink-900/50 px-4 py-3">
-          <input
-            type="checkbox"
-            checked={inheritGlobal}
-            onChange={(e) => setInheritGlobal((e.target as HTMLInputElement).checked)}
-            class="mt-0.5 size-4 rounded border-ink-600 bg-ink-900 accent-[var(--color-accent)]"
-          />
-          <span class="min-w-0 flex-1">
-            <span class="block text-sm font-medium text-fg">{t("backups.useGlobal")} — default is local</span>
-            <span class="mt-1 block text-xs leading-relaxed text-fg-muted">
-              {globalRetention
-                ? `Inherits: local • keeps ${globalRetention.max_backups} backup(s)${globalRetention.max_age_days ? ` • max ${globalRetention.max_age_days} days` : " • no age limit"}`
-                : t("backups.perServerHint")}
-            </span>
+        <div class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ink-700 bg-ink-900/50 px-4 py-3">
+          <label class="flex items-center gap-2.5 cursor-pointer text-sm font-medium text-fg">
+            <input
+              type="checkbox"
+              checked={inheritGlobal}
+              onChange={(e) => setInheritGlobal((e.target as HTMLInputElement).checked)}
+              class="size-4 rounded border-ink-600 bg-ink-900 accent-[var(--color-accent)]"
+            />
+            <span>{t("backups.useGlobal")}</span>
+          </label>
+          <span class="text-xs text-fg-muted">
+            {globalRetention
+              ? t("backups.inheritsSummary", {
+                  max: globalRetention.max_backups,
+                  age: globalRetention.max_age_days
+                    ? t("backups.maxDays", { days: globalRetention.max_age_days })
+                    : t("backups.noAgeLimit"),
+                })
+              : t("backups.perServerHint")}
           </span>
-        </label>
+        </div>
 
         {!inheritGlobal && (
-          <div class="space-y-4">
-            {/* Provider */}
-            <div class="grid gap-3 sm:grid-cols-[1fr_auto] items-end">
-              <Field label={t("backups.providerLabel")}>
-                <Select value={provider} onChange={(e) => setProvider((e.target as HTMLSelectElement).value as any)}>
-                  <option value="local">Local — on this machine</option>
-                  <option value="google_drive">Google Drive — cloud</option>
-                </Select>
-              </Field>
-              <div class="hidden sm:block pb-1 text-xs text-fg-muted">
-                {isGDrive ? "Cloud" : "Local"} storage
-              </div>
-            </div>
+          <div class="space-y-4 pt-1">
+            <Field label={t("backups.providerLabel")}>
+              <Select
+                value={provider}
+                onChange={(e) => setProvider((e.target as HTMLSelectElement).value as any)}
+              >
+                <option value="local">{t("backups.providerLocal")}</option>
+                <option value="google_drive">{t("backups.providerDrive")}</option>
+              </Select>
+            </Field>
 
             {isGDrive && (
               <div class="space-y-3 rounded-xl border border-sky-500/20 bg-sky-500/[0.06] p-4">
-                <Field label="Google Drive Folder ID">
-                  <Input value={folderId} placeholder="1abc… (or empty for My Drive root)" onInput={(e) => setFolderId((e.target as HTMLInputElement).value)} />
+                <Field
+                  label={t("backups.driveFolderId")}
+                  hint={t("backups.driveFolderHelp")}
+                >
+                  <Input
+                    value={folderId}
+                    placeholder={t("backups.driveFolderPlaceholder")}
+                    onInput={(e) => setFolderId((e.target as HTMLInputElement).value)}
+                  />
                 </Field>
-                <p class="text-xs leading-relaxed text-fg-muted">Same folder is used for all backups of this server. You can change it without losing existing backups — they stay reachable at their original location.</p>
 
-                <div class="rounded-lg border border-ink-700 bg-ink-900 px-3 py-3 text-xs leading-relaxed">
+                <div class="space-y-2">
                   {!oauthConfigured && (
-                    <p class="text-amber-300">
-                      OAuth not configured on server — set <code class="font-mono">MCPANEL_GOOGLE_CLIENT_ID</code> / <code class="font-mono">MCPANEL_GOOGLE_CLIENT_SECRET</code> then restart. Connect from the global Backups page first.
-                    </p>
+                    <Banner kind="warn">
+                      <div class="flex items-center gap-2 text-xs">
+                        <Icon.Warning size={14} />
+                        <span>
+                          {t("backups.oauthNotConfigured")} — {t("backups.connectFromGlobal")}
+                        </span>
+                      </div>
+                    </Banner>
                   )}
+
                   {oauthConfigured && !oauthConnected && (
-                    <>
-                      <p class="text-fg-muted">Not connected — sign in to allow this server to write to Drive.</p>
-                      <Button variant="primary" onClick={connectGoogle} disabled={oauthBusy} class="mt-2">
-                        {oauthBusy ? "Waiting…" : "Connect Google Drive"}
+                    <div class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ink-700 bg-ink-900 px-3 py-2.5">
+                      <div class="flex items-center gap-2 text-xs text-fg-muted">
+                        <span>{t("backups.notConnected")}</span>
+                        <InfoTooltip text={t("backups.notConnectedHelp")} />
+                      </div>
+                      <Button
+                        variant="primary"
+                        onClick={connectGoogle}
+                        disabled={oauthBusy}
+                        class="!px-3 !py-1 !text-xs"
+                      >
+                        {oauthBusy ? t("backups.waitingConsent") : t("backups.connectGoogle")}
                       </Button>
-                    </>
+                    </div>
                   )}
+
                   {oauthConnected && (
-                    <>
-                      <p class="text-emerald-300">✓ Drive connected — this server will use the global OAuth token.</p>
-                      <div class="mt-2 flex flex-wrap gap-2">
-                        <Button variant="ghost" onClick={test} disabled={testing}>
-                          {testing ? "Testing…" : "Test connection"}
+                    <div class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2.5">
+                      <div class="flex items-center gap-2 text-xs text-emerald-200">
+                        <Icon.Check size={14} class="text-emerald-400" />
+                        <span>{t("backups.connected")}</span>
+                        <InfoTooltip text={t("backups.driveServerTokenHelp")} />
+                      </div>
+                      <div class="flex items-center gap-2">
+                        <Button
+                          variant="ghost"
+                          onClick={test}
+                          disabled={testing}
+                          class="!px-2.5 !py-1 !text-xs"
+                        >
+                          {testing ? t("common.loading") : t("backups.testConnection")}
                         </Button>
-                        <Button variant="danger" onClick={disconnectGoogle} disabled={oauthBusy}>
-                          Disconnect
+                        <Button
+                          variant="danger"
+                          onClick={disconnectGoogle}
+                          disabled={oauthBusy}
+                          class="!px-2.5 !py-1 !text-xs"
+                        >
+                          {t("backups.disconnect")}
                         </Button>
                       </div>
-                    </>
+                    </div>
                   )}
                 </div>
               </div>
@@ -237,30 +289,33 @@ export function ServerBackupSettings({ serverId }: { serverId: string }) {
 
             <div class="grid gap-4 sm:grid-cols-2">
               <Field label={t("backups.maxBackupsLabel")}>
-                <Input type="number" min={1} value={maxBackups} onInput={(e) => setMaxBackups(Number((e.target as HTMLInputElement).value))} />
+                <Input
+                  type="number"
+                  min={1}
+                  value={maxBackups}
+                  onInput={(e) => setMaxBackups(Number((e.target as HTMLInputElement).value))}
+                />
               </Field>
               <Field label={t("backups.maxAgeLabel")}>
-                <Input value={maxAge} placeholder="Disabled" onInput={(e) => setMaxAge((e.target as HTMLInputElement).value)} />
+                <Input
+                  value={maxAge}
+                  placeholder={t("backups.maxAgePlaceholder")}
+                  onInput={(e) => setMaxAge((e.target as HTMLInputElement).value)}
+                />
               </Field>
             </div>
-            <p class="text-xs leading-relaxed text-fg-muted">
-              This overrides global retention only for this server. Newest backup is always protected from pruning.
-            </p>
           </div>
         )}
 
-        {inheritGlobal && (
-          <div class="rounded-lg border border-ink-700 bg-ink-850 px-4 py-3 text-xs leading-relaxed text-fg-muted">
-            <span class="font-medium text-fg">Why local by default?</span> Keeps restores instant and works offline. Switch off “Use global settings” above to store this server in Google Drive instead, or to keep more/fewer backups per world.
-          </div>
-        )}
-
-        <div class="flex flex-wrap items-center gap-3 border-t border-ink-700 pt-4">
+        <div class="flex flex-wrap items-center justify-between gap-3 border-t border-ink-700/60 pt-3">
           <Button variant="primary" onClick={save} disabled={busy}>
             {busy ? t("common.saving") : t("common.save")}
           </Button>
-          {!inheritGlobal && isGDrive && !folderId.trim() && (
-            <span class="text-xs text-amber-300">Tip: leave folder empty for Drive root, or paste a folder ID from Drive URL.</span>
+          {!inheritGlobal && (
+            <div class="flex items-center gap-1.5 text-xs text-fg-muted">
+              <span>{t("backups.perServerHint")}</span>
+              <InfoTooltip text={t("backups.retentionHelp")} />
+            </div>
           )}
         </div>
       </div>

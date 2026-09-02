@@ -246,6 +246,12 @@ export const X = (p: IconProps) => (
   </Icon>
 );
 
+export const Check = (p: IconProps) => (
+  <Icon {...p}>
+    <polyline points="20 6 9 17 4 12" />
+  </Icon>
+);
+
 export const Terminal = (p: IconProps) => (
   <Icon {...p}>
     <>

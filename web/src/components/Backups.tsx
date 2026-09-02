@@ -4,7 +4,7 @@ import { useT } from "../i18n";
 import { MenuButton, useMenu, type MenuItem } from "./Menu";
 import { useDialogs } from "./Modal";
 import { useToast } from "./Toast";
-import { Button, Empty, Input, formatBytes } from "./ui";
+import { Button, Empty, InfoTooltip, Input, formatBytes } from "./ui";
 import * as Icon from "./icons";
 import type { Backup, Status } from "../types";
 
@@ -117,7 +117,7 @@ export function Backups({ serverId, status }: { serverId: string; status: Status
 
   return (
     <div class="min-h-0 flex-1 space-y-4 overflow-y-auto pb-6">
-      <form onSubmit={create} class="flex flex-wrap items-end gap-3">
+      <form onSubmit={create} class="flex flex-wrap items-center gap-3">
         <div class="min-w-56 flex-1">
           <Input
             value={note}
@@ -128,12 +128,8 @@ export function Backups({ serverId, status }: { serverId: string; status: Status
         <Button type="submit" variant="primary" icon={<Icon.Archive size={15} />} disabled={busy === "create"}>
           {busy === "create" ? t("backups.taking") : t("backups.take")}
         </Button>
+        <InfoTooltip text={`${t("backups.explain")}${running ? ` ${t("backups.explainOnline")}` : ""}`} />
       </form>
-
-      <p class="text-xs leading-relaxed text-fg-muted">
-        {t("backups.explain")}
-        {running && ` ${t("backups.explainOnline")}`}
-      </p>
 
       <div class="overflow-hidden rounded-xl border border-ink-700 bg-ink-850">
         <table class="w-full text-sm">
