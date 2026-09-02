@@ -1,7 +1,8 @@
 import { useEffect, useState } from "preact/hooks";
 import { api } from "../api";
 import { Button, Card, Field, Input } from "../components/ui";
-import { useDialogs } from "../components/Modal";
+import * as Icon from "../components/icons";
+import { Modal, useDialogs } from "../components/Modal";
 import { useToast } from "../components/Toast";
 import { useT } from "../i18n";
 import type { PanelUser, Server } from "../types";
@@ -101,14 +102,19 @@ export function Users({ currentUser }: { currentUser: string }) {
           <h1 class="text-2xl font-semibold">{t("users.title")}</h1>
           <p class="text-sm text-fg-muted">{t("users.count", { count: users.length })}</p>
         </div>
-        <Button variant="primary" onClick={() => setCreating((v) => !v)}>
-          {creating ? t("common.cancel") : t("users.newAccount")}
+        <Button
+          variant="primary"
+          icon={<Icon.Plus size={15} />}
+          onClick={() => setCreating(true)}
+        >
+          {t("users.newAccount")}
         </Button>
       </header>
 
       {creating && (
         <CreateUser
           servers={servers}
+          onClose={() => setCreating(false)}
           onCreated={async () => {
             setCreating(false);
             await refresh();
@@ -187,9 +193,11 @@ export function Users({ currentUser }: { currentUser: string }) {
 
 function CreateUser({
   servers,
+  onClose,
   onCreated,
 }: {
   servers: Server[];
+  onClose: () => void;
   onCreated: () => void;
 }) {
   const t = useT();
@@ -201,8 +209,9 @@ function CreateUser({
   const [granted, setGranted] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
 
-  async function submit(event: Event) {
-    event.preventDefault();
+  async function submit(event?: Event) {
+    event?.preventDefault();
+    if (busy) return;
     setBusy(true);
     try {
       await api.createUser({ username, password, admin, servers: granted });
@@ -215,8 +224,28 @@ function CreateUser({
   }
 
   return (
-    <Card title={t("users.newAccount")}>
-      <form onSubmit={submit} class="space-y-4">
+    <Modal
+      title={t("users.newAccount")}
+      onClose={onClose}
+      width="lg"
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            {t("common.cancel")}
+          </Button>
+          <Button
+            type="submit"
+            form="create-user-form"
+            variant="primary"
+            disabled={busy}
+            onClick={submit}
+          >
+            {busy ? t("common.creating") : t("users.createAccount")}
+          </Button>
+        </>
+      }
+    >
+      <form id="create-user-form" onSubmit={submit} class="space-y-4">
         <div class="grid gap-4 sm:grid-cols-2">
           <Field label={t("users.username")}>
             <Input
@@ -246,7 +275,7 @@ function CreateUser({
         </label>
 
         {!admin && servers.length > 0 && (
-          <div class="space-y-2">
+          <div class="space-y-2 pt-1">
             <p class="text-xs uppercase tracking-wider text-fg-muted">{t("users.serverAccess")}</p>
             <div class="flex flex-wrap gap-3">
               {servers.map((server) => (
@@ -269,11 +298,7 @@ function CreateUser({
             </div>
           </div>
         )}
-
-        <Button type="submit" variant="primary" disabled={busy}>
-          {busy ? t("common.creating") : t("users.createAccount")}
-        </Button>
       </form>
-    </Card>
+    </Modal>
   );
 }

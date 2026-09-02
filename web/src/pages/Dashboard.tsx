@@ -1,5 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import { api } from "../api";
+import { Modal } from "../components/Modal";
 import { Button, Card, Field, Input, Select, StatCard, StatusPill, formatUptime } from "../components/ui";
 import * as Icon from "../components/icons";
 import { useToast } from "../components/Toast";
@@ -61,10 +62,10 @@ export function Dashboard({
         {user.admin && (
           <Button
             variant="primary"
-            icon={creating ? undefined : <Icon.Plus size={15} />}
-            onClick={() => setCreating((v) => !v)}
+            icon={<Icon.Plus size={15} />}
+            onClick={() => setCreating(true)}
           >
-            {creating ? t("common.cancel") : t("dashboard.newServer")}
+            {t("dashboard.newServer")}
           </Button>
         )}
       </header>
@@ -100,6 +101,7 @@ export function Dashboard({
 
       {creating && (
         <CreateServer
+          onClose={() => setCreating(false)}
           onCreated={async () => {
             setCreating(false);
             await refresh();
@@ -170,7 +172,7 @@ export function Dashboard({
           </article>
         ))}
 
-        {servers.length === 0 && !creating && (
+        {servers.length === 0 && (
           <Card>
             <p class="text-center text-sm text-fg-muted">
               {t("dashboard.empty")}{" "}
@@ -183,7 +185,13 @@ export function Dashboard({
   );
 }
 
-function CreateServer({ onCreated }: { onCreated: () => void }) {
+function CreateServer({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  onCreated: () => void;
+}) {
   const t = useT();
   const toast = useToast();
   const [providers, setProviders] = useState<{ id: string; server: boolean }[]>([]);
@@ -215,8 +223,9 @@ function CreateServer({ onCreated }: { onCreated: () => void }) {
       .catch((e) => toast.error(e.message));
   }, [form.core]);
 
-  async function submit(event: Event) {
-    event.preventDefault();
+  async function submit(event?: Event) {
+    event?.preventDefault();
+    if (busy || !form.version) return;
     setBusy(true);
     try {
       await api.createServer({
@@ -239,10 +248,30 @@ function CreateServer({ onCreated }: { onCreated: () => void }) {
   const set = (patch: Partial<typeof form>) => setForm((f) => ({ ...f, ...patch }));
 
   return (
-    <Card title="New server">
-      <form onSubmit={submit} class="space-y-5">
-          <div class="grid gap-4 sm:grid-cols-2">
-          <Field label="Name">
+    <Modal
+      title={t("dashboard.newServer")}
+      onClose={onClose}
+      width="lg"
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            {t("common.cancel")}
+          </Button>
+          <Button
+            type="submit"
+            form="create-server-form"
+            variant="primary"
+            disabled={busy || !form.version}
+            onClick={submit}
+          >
+            {busy ? t("common.creating") : t("createServer.submit")}
+          </Button>
+        </>
+      }
+    >
+      <form id="create-server-form" onSubmit={submit} class="space-y-4">
+        <div class="grid gap-4 sm:grid-cols-2">
+          <Field label={t("common.name")}>
             <Input
               value={form.name}
               placeholder="Survival"
@@ -272,7 +301,10 @@ function CreateServer({ onCreated }: { onCreated: () => void }) {
             </Select>
           </Field>
 
-          <Field label={t("createServer.version")} hint={versions.length === 0 ? t("common.loading") : undefined}>
+          <Field
+            label={t("createServer.version")}
+            hint={versions.length === 0 ? t("common.loading") : undefined}
+          >
             <Select
               value={form.version}
               onChange={(e) => set({ version: (e.target as HTMLSelectElement).value })}
@@ -316,7 +348,7 @@ function CreateServer({ onCreated }: { onCreated: () => void }) {
           </div>
         </div>
 
-        <label class="flex items-start gap-2.5 text-sm">
+        <label class="flex items-start gap-2.5 pt-1 text-sm">
           <input
             type="checkbox"
             checked={form.eula_accepted}
@@ -336,11 +368,7 @@ function CreateServer({ onCreated }: { onCreated: () => void }) {
             {t("createServer.eulaSuffix")}
           </span>
         </label>
-
-        <Button type="submit" variant="primary" disabled={busy || !form.version}>
-          {busy ? t("common.creating") : t("createServer.submit")}
-        </Button>
       </form>
-    </Card>
+    </Modal>
   );
 }

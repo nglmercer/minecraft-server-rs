@@ -240,6 +240,12 @@ export const Plus = (p: IconProps) => (
   </Icon>
 );
 
+export const X = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M18 6 6 18M6 6l12 12" />
+  </Icon>
+);
+
 export const Terminal = (p: IconProps) => (
   <Icon {...p}>
     <>

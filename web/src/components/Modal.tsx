@@ -1,11 +1,13 @@
 import type { ComponentChildren } from "preact";
 import { createContext } from "preact";
+import { createPortal } from "preact/compat";
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { useT } from "../i18n";
 import { Button, Input } from "./ui";
+import * as Icon from "./icons";
 
 /**
- * A modal dialog.
+ * A modal dialog rendered at document body via a portal.
  *
  * Native `confirm`/`prompt` block the event loop, cannot be styled, cannot be
  * translated, and in the browser-automation guidance are outright hazardous —
@@ -22,8 +24,9 @@ export function Modal({
   onClose: () => void;
   children: ComponentChildren;
   footer?: ComponentChildren;
-  width?: "sm" | "md" | "lg";
+  width?: "sm" | "md" | "lg" | "xl";
 }) {
+  const t = useT();
   const panel = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -32,27 +35,39 @@ export function Modal({
     };
     document.addEventListener("keydown", onKeyDown);
 
-    // Moving focus in makes the dialog reachable by keyboard immediately, and
-    // stops Enter from re-triggering the button that opened it.
-    const focusable = panel.current?.querySelector<HTMLElement>(
-      "input, textarea, select, button",
+    // Moving focus in makes the dialog reachable by keyboard immediately, prioritizing
+    // editable inputs first, then actions.
+    const formControl = panel.current?.querySelector<HTMLElement>(
+      "input:not([type=hidden]):not([disabled]), textarea:not([disabled]), select:not([disabled])",
     );
+    const focusable =
+      formControl ??
+      panel.current?.querySelector<HTMLElement>(
+        "footer button:not([disabled]), button:not([disabled])",
+      );
     focusable?.focus();
 
-    const { overflow } = document.body.style;
+    const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
 
     return () => {
       document.removeEventListener("keydown", onKeyDown);
-      document.body.style.overflow = overflow;
+      document.body.style.overflow = previousOverflow;
     };
   }, [onClose]);
 
-  const widths = { sm: "max-w-sm", md: "max-w-md", lg: "max-w-2xl" };
+  if (typeof document === "undefined") return null;
 
-  return (
+  const widths = {
+    sm: "max-w-sm",
+    md: "max-w-md",
+    lg: "max-w-2xl",
+    xl: "max-w-3xl",
+  };
+
+  const modal = (
     <div
-      class="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm"
+      class="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-black/60 p-4 backdrop-blur-sm sm:p-6"
       onClick={onClose}
       role="presentation"
     >
@@ -61,15 +76,23 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        class={`w-full ${widths[width]} overflow-hidden rounded-2xl border border-ink-700 bg-ink-850 shadow-2xl`}
+        class={`my-auto flex w-full max-h-[calc(100vh-2rem)] sm:max-h-[calc(100vh-3.5rem)] flex-col ${widths[width]} overflow-hidden rounded-2xl border border-ink-700 bg-ink-850 shadow-2xl animate-[fade-in_150ms_ease-out]`}
         // Without this a click inside the panel bubbles to the backdrop and closes it.
         onClick={(event) => event.stopPropagation()}
       >
-        <header class="border-b border-ink-700 px-5 py-4">
-          <h2 class="text-base font-semibold">{title}</h2>
+        <header class="flex items-center justify-between gap-4 border-b border-ink-700 px-5 py-4">
+          <h2 class="text-base font-semibold text-fg">{title}</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label={t("common.close")}
+            class="grid size-8 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-ink-700 hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+          >
+            <Icon.X size={16} />
+          </button>
         </header>
 
-        <div class="px-5 py-4 text-sm text-fg-muted">{children}</div>
+        <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4 text-sm text-fg-muted">{children}</div>
 
         {footer && (
           <footer class="flex justify-end gap-2 border-t border-ink-700 px-5 py-3.5">
@@ -79,6 +102,8 @@ export function Modal({
       </div>
     </div>
   );
+
+  return createPortal(modal, document.body);
 }
 
 /** What a caller asks the dialog host to show. */
