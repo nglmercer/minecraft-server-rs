@@ -1,6 +1,6 @@
 # minecraft-server-rs
 
-[![CI](https://github.com/nglmercer/minecraft-server-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/nglmercer/minecraft-server-rs/actions/workflows/ci.yml)
+[New project.webm](https://github.com/user-attachments/assets/e0741586-d3eb-4d6c-8f25-804ccc14880f)
 
 A Minecraft server control panel that is one binary, one config file, and no dependencies at runtime.
 
