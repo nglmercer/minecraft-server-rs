@@ -46,6 +46,16 @@ jobs:
         with:
           key: ${{ matrix.os }}
 
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0 (Node 24)
+        with:
+          node-version: 22
+
+      - name: Install LLVM linker
+        if: matrix.os == 'windows-latest'
+        run: |
+          choco install llvm --no-progress -y
+          echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
+
       - name: Install the Linux desktop tray dependencies
         # Only the `linux-tray` steps below need these; the default build links
         # none of them, which is what lets the release binary run on a server.
@@ -65,7 +75,7 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: npm run rust:clippy
 
       - name: Clippy (Linux desktop tray)
         # The Linux tray is an opt-in feature, so the default run above never
@@ -82,7 +92,7 @@ jobs:
         # Windows is in the matrix deliberately. The supervisor tests spawn real
         # child processes, and process handling is the part most likely to
         # differ between platforms — so it is the part least worth assuming.
-        run: cargo test --workspace
+        run: npm run rust:test
 
       - name: Test (Linux desktop tray)
         if: matrix.os == 'ubuntu-latest'

@@ -14,8 +14,19 @@ cd minecraft-server-rs
 On Windows run the two steps `build.sh` wraps:
 
 ```sh
-cd web && npm install && npm run build
-cargo build --release
+cd web
+npm install
+npm run build
+cd ..
+npm run build:native
+```
+
+Windows requires MSVC Build Tools. LLVM `lld-link` is optional. When available
+on `PATH`, Rust commands automatically use it for faster linking; otherwise the
+default MSVC linker is used:
+
+```powershell
+winget install -e --id LLVM.LLVM
 ```
 
 Two Linux builds are published: `linux-x86_64` (glibc) and `linux-x86_64-static` (musl/static) for Alpine or older distros.

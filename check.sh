@@ -15,10 +15,10 @@ if [[ ${MCPANEL_FAST:-0} == 1 ]]; then
   cargo fmt --all --check
 
   step "Rust check"
-  cargo check --workspace
+  npm run rust:check
 
   step "Clippy (workspace only)"
-  cargo clippy --workspace --no-deps -- -D warnings
+  npm run rust:clippy:fast
 
   printf '\n\033[1;32mFast checks passed.\033[0m\n'
   exit 0
@@ -28,10 +28,10 @@ step "Format"
 cargo fmt --all --check
 
 step "Clippy"
-cargo clippy --workspace --all-targets --no-deps -- -D warnings
+npm run rust:clippy:workspace
 
 step "Rust tests"
-cargo test --workspace
+npm run rust:test
 
 step "Rust dependency advisories"
 cargo deny check advisories
@@ -49,7 +49,7 @@ if [[ ${MCPANEL_SKIP_RELEASE_BUILD:-0} == 1 ]]; then
   step "Release build (skipped by MCPANEL_SKIP_RELEASE_BUILD)"
 else
   step "Release build"
-  cargo build --release --locked -p panel
+  npm run build:native
 
 step "Embedded frontend"
 # A release binary that quietly serves the "frontend not built" page would

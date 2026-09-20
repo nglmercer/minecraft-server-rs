@@ -32,7 +32,9 @@ $env:CARGO_BUILD_JOBS = "2"; cargo dev-check  # PowerShell
 - `MCPANEL_FAST=1 ./build.sh` — builds `target/debug/mcpanel` without release LTO / single codegen unit.
 - Default `./check.sh` / `./build.sh` run the complete CI/release workflow.
 
-On Windows the wrapper scripts are Bash; run the equivalent Cargo/npm commands directly. See [Platforms](platforms.md#windows).
+On Windows the wrapper scripts are Bash; run the equivalent Cargo/npm commands
+from the repository root. `npm run build:native` and the `rust:*` scripts use
+`lld-link` automatically when it is available. See [Platforms](platforms.md#windows).
 
 ## Frontend workspace
 

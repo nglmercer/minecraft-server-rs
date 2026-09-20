@@ -1,0 +1,14 @@
+{
+  "name": "minecraft-server-rs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:native": "node scripts/cargo-with-linker.mjs",
+    "rust:check": "node scripts/cargo-with-linker.mjs check --workspace",
+    "rust:clippy": "node scripts/cargo-with-linker.mjs clippy --workspace --all-targets -- -D warnings",
+    "rust:clippy:workspace": "node scripts/cargo-with-linker.mjs clippy --workspace --all-targets --no-deps -- -D warnings",
+    "rust:clippy:fast": "node scripts/cargo-with-linker.mjs clippy --workspace --no-deps -- -D warnings",
+    "rust:test": "node scripts/cargo-with-linker.mjs test --workspace",
+    "rust:validate": "npm run rust:check && npm run rust:clippy && npm run rust:test"
+  }
+}

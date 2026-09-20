@@ -4,3 +4,15 @@
 dev-check = "check --workspace"
 dev-clippy = "clippy --workspace --no-deps -- -D warnings"
 workspace-test = "test --workspace"
+
+# Windows intentionally has no linker override.
+#
+# When no custom linker is configured, Rust/MSVC uses its normal linker.
+# scripts/cargo-with-linker.mjs optionally enables `lld-link` when it is on PATH.
+# Do not add a target-specific LLVM linker here: that would require LLVM for
+# every Windows developer.
+
+# Optional Linux fast linker example:
+# [target.x86_64-unknown-linux-gnu]
+# linker = "clang"
+# rustflags = ["-C", "link-arg=-fuse-ld=mold"]

@@ -17,8 +17,26 @@ The Rust test suite runs on Windows too — the stand-in for the JVM is a small 
 `build.sh` is a shell script. On Windows run the two steps it wraps:
 
 ```sh
-cd web && npm ci && npm run build
-cargo build --release --locked
+cd web
+npm ci
+npm run build
+cd ..
+npm run build:native
+```
+
+Windows native builds require Rust and MSVC Build Tools:
+
+- MSVC Build Tools are required on Windows.
+- LLVM `lld-link` is optional. When available on `PATH`, Rust commands
+  automatically use it for faster linking; otherwise the default MSVC linker
+  is used.
+
+Explicit `CARGO_TARGET_*_PC_WINDOWS_MSVC_LINKER` environment variables take
+precedence and are never overwritten. Install LLVM only if you want faster
+linking:
+
+```powershell
+winget install -e --id LLVM.LLVM
 ```
 
 Two Linux builds are published: `linux-x86_64` (glibc) and `linux-x86_64-static` (static) for Alpine or older distros. See [Releasing](releasing.md) and [Getting Started](getting-started.md).

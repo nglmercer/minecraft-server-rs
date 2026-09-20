@@ -12,11 +12,11 @@ echo "==> building frontend"
 
 if [[ ${MCPANEL_FAST:-0} == 1 ]]; then
   echo "==> building panel (debug profile)"
-  cargo build --locked -p panel
+  node scripts/cargo-with-linker.mjs build --locked -p panel
   binary="target/debug/mcpanel"
 else
   echo "==> building panel (release profile)"
-  cargo build --release --locked -p panel
+  npm run build:native
   binary="target/release/mcpanel"
 fi
 

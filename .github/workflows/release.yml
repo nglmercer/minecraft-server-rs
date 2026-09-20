@@ -90,6 +90,12 @@ jobs:
           # not a feature set, and must not share a cache entry.
           key: ${{ matrix.name }}
 
+      - name: Install LLVM linker
+        if: runner.os == 'Windows'
+        run: |
+          choco install llvm --no-progress -y
+          echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
+
       - name: Install the musl toolchain
         if: endsWith(matrix.target, '-musl')
         # ring compiles C, and needs a musl-targeting compiler to do it.
@@ -116,7 +122,7 @@ jobs:
         run: test -f assets/mcp.ico || (echo "::error::assets/mcp.ico missing — tray builds will fail"; exit 1)
 
       - name: Build
-        run: cargo build --release --locked --target ${{ matrix.target }} -p panel --bin mcpanel ${{ matrix.features && format('--features panel/{0}', matrix.features) || '' }}
+        run: ${{ runner.os == 'Windows' && format('npm run build:native -- --target {0} --bin mcpanel', matrix.target) || format('cargo build --release --locked --target {0} -p panel --bin mcpanel {1}', matrix.target, matrix.features && format('--features panel/{0}', matrix.features) || '') }}
 
       - name: Package (unix)
         if: runner.os != 'Windows'
