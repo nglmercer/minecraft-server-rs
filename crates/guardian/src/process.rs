@@ -870,6 +870,21 @@ impl Guardian {
             .env("TMP", &env.directory)
             .env("TMPDIR", &env.directory);
 
+        // The standalone APK's installed launcher needs its private runtime
+        // data directory. Only forward it for the launcher bound to that home;
+        // server configuration cannot redirect this process-owned setting.
+        #[cfg(target_os = "android")]
+        if let Some(home) = std::env::var_os("MCPANEL_ANDROID_JAVA_HOME") {
+            let home = std::path::PathBuf::from(home);
+            if home.is_absolute()
+                && std::fs::canonicalize(home.join("bin/java")).ok()
+                    == std::fs::canonicalize(&env.java).ok()
+                && std::fs::canonicalize(&env.java).is_ok()
+            {
+                command.env("MCPANEL_ANDROID_JAVA_HOME", home);
+            }
+        }
+
         let mut child = command.spawn().map_err(|e| Error::io(&env.java, e))?;
 
         let pid = child.id().unwrap_or(0);

@@ -117,6 +117,9 @@ async fn resolve_java_on(
     // Generic Linux Temurin archives require glibc and cannot execute in
     // Android's Bionic environment. Package installation stays operator-owned.
     if platform == java_path::Platform::Termux {
+        if std::env::var_os("MCPANEL_ANDROID_JAVA_HOME").is_some() {
+            return Err(Error::AndroidJavaRequired(major));
+        }
         return Err(Error::TermuxJavaRequired(major));
     }
 
@@ -478,7 +481,11 @@ fn trusted_installation(
     let Ok(home) = std::fs::canonicalize(&recorded_home) else {
         return false;
     };
-    if java != home.join("bin").join(java_exe_name()) {
+    if std::fs::canonicalize(home.join("bin").join(java_exe_name()))
+        .ok()
+        .as_ref()
+        != Some(&java)
+    {
         return false;
     }
 
@@ -486,7 +493,7 @@ fn trusted_installation(
     // launcher inside it is attacker-placed by definition.
     let server_dir = std::fs::canonicalize(&config.directory)
         .unwrap_or_else(|_| absolute(config.directory.clone()));
-    if java.starts_with(&server_dir) {
+    if java.starts_with(&server_dir) || home.starts_with(&server_dir) {
         return false;
     }
 
@@ -835,6 +842,47 @@ mod tests {
             !trusted_installation(&installation, &config, tmp.path()),
             "a launcher inside the operator-writable server directory is attacker-placed"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_installed_apk_launcher_can_be_linked_from_a_private_runtime() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let home = fake_jdk_home(tmp.path(), "runtime", 21);
+        let launcher = tmp.path().join("libmcjava.so");
+        std::fs::write(&launcher, b"installed native launcher").unwrap();
+        std::fs::remove_file(home.join("bin/java")).unwrap();
+        symlink(&launcher, home.join("bin/java")).unwrap();
+        let server = tmp.path().join("server");
+        std::fs::create_dir_all(&server).unwrap();
+        let mut installation = warm_installation(&server, &home);
+        installation.java = launcher;
+        assert!(trusted_installation(
+            &installation,
+            &warm_config(&server),
+            tmp.path()
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_operator_cannot_supply_runtime_metadata_with_an_external_launcher() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let server = tmp.path().join("server");
+        let home = fake_jdk_home(&server, "planted-runtime", 21);
+        let launcher = tmp.path().join("libmcjava.so");
+        std::fs::write(&launcher, b"installed native launcher").unwrap();
+        std::fs::remove_file(home.join("bin/java")).unwrap();
+        symlink(&launcher, home.join("bin/java")).unwrap();
+        let mut installation = warm_installation(&server, &home);
+        installation.java = launcher;
+        assert!(!trusted_installation(
+            &installation,
+            &warm_config(&server),
+            tmp.path()
+        ));
     }
 
     #[test]

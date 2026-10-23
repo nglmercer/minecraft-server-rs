@@ -44,6 +44,10 @@ pub fn hidden_command(program: impl AsRef<OsStr>) -> std::process::Command {
 pub fn open_browser(url: &str) {
     #[cfg(target_os = "android")]
     {
+        // The standalone APK displays setup and recovery in its own WebView.
+        if std::env::var_os("MCPANEL_ANDROID_JAVA_HOME").is_some() {
+            return;
+        }
         if hidden_command("termux-open-url").arg(url).spawn().is_err() {
             tracing::warn!("could not open browser; open the setup/recovery URL manually");
         }

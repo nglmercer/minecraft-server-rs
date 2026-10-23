@@ -9,3 +9,10 @@ web/dist
 *.log
 web/tsconfig.tsbuildinfo
 .tmp*
+
+/android/build/
+/android/*.apk
+
+/android/**/*.pyc
+/android/**/__pycache__/
+/android/*.apk.idsig
