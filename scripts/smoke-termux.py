@@ -40,9 +40,13 @@ def main():
     if any(work.iterdir()):
         parser.error("--work-dir must be empty to keep existing panel data untouched")
     panel_port, game_port = free_port(), free_port()
+    while game_port == panel_port:
+        game_port = free_port()
     base = f"http://127.0.0.1:{panel_port}"
     cookies = http.cookiejar.CookieJar()
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies))
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), urllib.request.HTTPCookieProcessor(cookies)
+    )
     environment = dict(os.environ)
     # No claiming/account requests during a local server lifecycle test.
     environment["MCPANEL_NO_TRAY"] = "1"
