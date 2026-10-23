@@ -20,8 +20,10 @@ const DISK_TTL: Duration = Duration::from_secs(60);
 /// What the machine as a whole is doing.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct HostMetrics {
-    /// Busy percentage across all cores, 0..=100.
-    pub cpu_percent: f32,
+    /// Busy percentage across all cores, 0..=100; unavailable on restricted hosts.
+    pub cpu_percent: Option<f32>,
+    /// True when host load is estimated from kernel CPU idle counters.
+    pub cpu_estimated: bool,
     /// Physical memory in use, in mebibytes.
     pub memory_used_mb: u64,
     /// Physical memory installed, in mebibytes.
@@ -33,11 +35,11 @@ pub struct HostMetrics {
 pub struct ProcessMetrics {
     /// Existing sysinfo value: 100 means one fully occupied logical CPU, so a
     /// multi-threaded process can legitimately exceed 100.
-    pub cpu_percent: f32,
+    pub cpu_percent: Option<f32>,
     /// Approximate number of logical CPUs consumed.
-    pub cpu_cores: f32,
+    pub cpu_cores: Option<f32>,
     /// Process CPU normalized against the whole panel host, in 0..=100.
-    pub cpu_host_percent: f32,
+    pub cpu_host_percent: Option<f32>,
     /// Logical CPUs available to the panel host.
     pub logical_cpu_count: usize,
     /// Resident memory (RSS) in mebibytes.
@@ -55,6 +57,8 @@ pub struct Metrics {
     host_cpu: Mutex<(Instant, f32)>,
     /// The host capacity against which per-process CPU is normalized.
     logical_cpu_count: usize,
+    #[cfg(target_os = "android")]
+    android_cpu: Mutex<crate::android_cpu::AndroidCpu>,
 }
 
 impl Default for Metrics {
@@ -72,6 +76,8 @@ impl Default for Metrics {
             disk: Mutex::new(HashMap::new()),
             host_cpu: Mutex::new((Instant::now(), 0.0)),
             logical_cpu_count,
+            #[cfg(target_os = "android")]
+            android_cpu: Mutex::new(crate::android_cpu::AndroidCpu::new()),
         }
     }
 }
@@ -79,8 +85,8 @@ impl Default for Metrics {
 impl Metrics {
     /// Sample `pid`, or `None` if the process has gone.
     ///
-    /// The first sample for a process always reports 0% CPU: there is no
-    /// previous measurement to compare against, and inventing one would lie.
+    /// A first process sample establishes the baseline. Android reports no
+    /// CPU value until a second sample; sysinfo reports 0% on its first sample.
     pub fn of(&self, pid: u32) -> Option<ProcessMetrics> {
         let pid = Pid::from_u32(pid);
         let mut system = self.system.lock().ok()?;
@@ -91,14 +97,24 @@ impl Metrics {
             ProcessRefreshKind::nothing().with_cpu().with_memory(),
         );
 
+        // sysinfo needs the host CPU time baseline to compute process CPU.
+        // Android commonly denies it while still allowing this app's RSS.
+        let cpu_available = !system.cpus().is_empty();
         let process = system.process(pid)?;
-        let cpu_percent = process.cpu_usage();
-        let (cpu_cores, cpu_host_percent) =
-            normalize_process_cpu(cpu_percent, self.logical_cpu_count);
+        let cpu_percent = cpu_available.then(|| process.cpu_usage());
+        #[cfg(target_os = "android")]
+        let cpu_percent = cpu_percent.or_else(|| {
+            self.android_cpu
+                .lock()
+                .ok()?
+                .process(pid.as_u32(), Instant::now())
+        });
+        let normalized =
+            cpu_percent.map(|value| normalize_process_cpu(value, self.logical_cpu_count));
         Some(ProcessMetrics {
             cpu_percent,
-            cpu_cores,
-            cpu_host_percent,
+            cpu_cores: normalized.map(|(cores, _)| cores),
+            cpu_host_percent: normalized.map(|(_, host)| host),
             logical_cpu_count: self.logical_cpu_count,
             memory_mb: process.memory() / 1024 / 1024,
         })
@@ -128,8 +144,23 @@ impl Metrics {
             Err(_) => system.global_cpu_usage(),
         };
 
+        let cpu_percent = (!system.cpus().is_empty()).then_some(cpu_percent);
+        #[cfg(not(target_os = "android"))]
+        let cpu_estimated = false;
+        #[cfg(target_os = "android")]
+        let (cpu_percent, cpu_estimated) = if cpu_percent.is_none() {
+            let estimate = self
+                .android_cpu
+                .lock()
+                .ok()
+                .and_then(|mut cpu| cpu.host(Instant::now()));
+            (estimate, estimate.is_some())
+        } else {
+            (cpu_percent, false)
+        };
         HostMetrics {
             cpu_percent,
+            cpu_estimated,
             memory_used_mb: system.used_memory() / 1024 / 1024,
             memory_total_mb: system.total_memory() / 1024 / 1024,
         }
@@ -215,13 +246,31 @@ mod tests {
     fn host_cpu_responds_to_load() {
         let metrics = Metrics::default();
 
+        // The native counter test expects precise short-interval load deltas.
+        // Android's deferred cpuidle accounting is estimated and is covered by
+        // deterministic counter fixtures and on-device sampling tests instead.
+        if metrics.system.lock().unwrap().cpus().is_empty() {
+            let first = metrics.host();
+            assert!(first.cpu_percent.is_none() || first.cpu_estimated);
+            return;
+        }
+
         // Establish a baseline, then read again after an idle gap.
         metrics.host();
         std::thread::sleep(MINIMUM_CPU_UPDATE_INTERVAL * 2);
-        let idle = metrics.host().cpu_percent;
+        let Some(idle) = metrics.host().cpu_percent else {
+            // Restricted Android hosts have no CPU baseline. Verify the API
+            // reports absence instead of an idle-looking 0, without burning CPU.
+            assert!(metrics.system.lock().unwrap().cpus().is_empty());
+            assert!(serde_json::to_value(metrics.host()).unwrap()["cpu_percent"].is_null());
+            return;
+        };
 
         saturate(MINIMUM_CPU_UPDATE_INTERVAL * 3);
-        let busy = metrics.host().cpu_percent;
+        let busy = metrics
+            .host()
+            .cpu_percent
+            .expect("CPU baseline disappeared");
 
         // Asserting `busy > 0` would not catch anything: a freshly built System
         // reports an average since boot, which is non-zero and never moves. What
@@ -233,6 +282,19 @@ mod tests {
             busy > idle + delta || busy > 90.0,
             "idle {idle}% then saturated {busy}%: the reading is not tracking load"
         );
+    }
+
+    #[test]
+    fn restricted_cpu_does_not_hide_readable_process_memory() {
+        let metrics = Metrics::default();
+        let process = metrics
+            .of(std::process::id())
+            .expect("own process is visible");
+        assert!(process.memory_mb > 0);
+        let cpu_available = !metrics.system.lock().unwrap().cpus().is_empty();
+        assert_eq!(process.cpu_percent.is_some(), cpu_available);
+        assert_eq!(process.cpu_cores.is_some(), cpu_available);
+        assert_eq!(process.cpu_host_percent.is_some(), cpu_available);
     }
 
     #[test]

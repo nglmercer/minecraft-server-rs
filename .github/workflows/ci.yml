@@ -98,6 +98,40 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo test --workspace --features panel/linux-tray
 
+  android:
+    name: Rust (Android ARM64 / Termux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          targets: aarch64-linux-android
+          components: clippy
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          key: android-arm64
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build embedded frontend
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+      - name: Check Android code and tests
+        run: ./scripts/cargo-android.sh clippy --locked --workspace --all-targets -- -D warnings
+      - name: Build Android release binary
+        run: ./scripts/cargo-android.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mcpanel-android-arm64
+          path: target/aarch64-linux-android/release/mcpanel
+          retention-days: 7
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
@@ -133,7 +167,7 @@ jobs:
     name: Release binary
     runs-on: ubuntu-latest
     # Only worth building once the pieces it is made of are known to be sound.
-    needs: [backend, frontend]
+    needs: [backend, frontend, android]
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0 (Node 24)

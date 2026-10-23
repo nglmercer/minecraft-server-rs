@@ -17,9 +17,15 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-That builds for Linux (glibc and static), Windows and both macOS architectures, starts each native binary to confirm it serves the embedded frontend, and publishes them to a GitHub Release with checksums and generated notes. A target that fails to build stops the release rather than publishing a partial one.
+That builds for Linux (glibc and static), Windows, both macOS architectures, and Android ARM64 for Termux, starts each native binary to confirm it serves the embedded frontend, and publishes them to a GitHub Release with checksums and generated notes. A target that fails to build stops the release rather than publishing a partial one.
 
 The release workflow verifies the built binary actually serves the compiled frontend (checks for `assets/index-` in the served page); a release that quietly ships the "frontend not built" stub is treated as a failure. See `.github/workflows/` and [Testing](testing.md).
+
+The Android target is cross-compiled with the runner's Android NDK (API 24),
+using `scripts/cargo-android.sh`. Its archive includes `docs/termux.md`. Android
+and cross-compiled macOS binaries cannot be executed by the Linux/ARM runner
+respectively; use the on-device checks in [Termux](termux.md#validation) before
+shipping Android changes.
 
 ## Licence
 

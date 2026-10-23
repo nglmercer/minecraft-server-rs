@@ -46,6 +46,11 @@ jobs:
             os: ubuntu-latest
             target: x86_64-unknown-linux-musl
 
+          # Bionic/Android binary for native ARM64 Termux, not Linux/glibc.
+          - name: android-arm64
+            os: ubuntu-24.04
+            target: aarch64-linux-android
+
           # Windows always includes the system tray (crates/tray cfg(windows) + embedded assets/mcp.ico).
           # No feature flag needed — the tray is compiled in on this target automatically.
           - name: windows-x86_64
@@ -121,7 +126,12 @@ jobs:
         shell: bash
         run: test -f assets/mcp.ico || (echo "::error::assets/mcp.ico missing — tray builds will fail"; exit 1)
 
+      - name: Build Android (Termux)
+        if: matrix.target == 'aarch64-linux-android'
+        run: ./scripts/cargo-android.sh
+
       - name: Build
+        if: matrix.target != 'aarch64-linux-android'
         run: ${{ runner.os == 'Windows' && format('npm run build:native -- --target {0} --bin mcpanel', matrix.target) || format('cargo build --release --locked --target {0} -p panel --bin mcpanel {1}', matrix.target, matrix.features && format('--features panel/{0}', matrix.features) || '') }}
 
       - name: Package (unix)
@@ -133,6 +143,8 @@ jobs:
           mkdir "$staging"
           cp "target/${{ matrix.target }}/release/mcpanel" "$staging/"
           cp README.md LICENSE "$staging/"
+          mkdir "$staging/docs"
+          cp docs/termux.md "$staging/docs/"
           tar czf "${staging}.tar.gz" "$staging"
           echo "ASSET=${staging}.tar.gz" >> "$GITHUB_ENV"
 
@@ -151,7 +163,7 @@ jobs:
       - name: Check the binary runs and embeds the frontend
         # Native targets only: a macos-x86_64 binary cannot execute on an arm
         # runner, and there is nothing to learn from trying.
-        if: matrix.name != 'macos-x86_64'
+        if: matrix.name != 'macos-x86_64' && matrix.target != 'aarch64-linux-android'
         shell: bash
         run: |
           binary="target/${{ matrix.target }}/release/mcpanel"

@@ -87,11 +87,11 @@ export function Dashboard({
         <div class="grid grid-cols-3 gap-2 sm:gap-4">
           <StatCard
             compact
-            shortLabel={t("dashboard.hostCpuShort")}
+            shortLabel={t(stats.cpu_estimated ? "dashboard.hostCpuEstimatedShort" : "dashboard.hostCpuShort")}
             icon={<Icon.Cpu size={18} />}
-            value={`${stats.cpu_percent.toFixed(0)}%`}
+            value={stats.cpu_percent === null ? t("common.unknown") : `${stats.cpu_percent.toFixed(0)}%`}
             max="100%"
-            label={t("dashboard.hostCpu")}
+            label={t(stats.cpu_estimated ? "dashboard.hostCpuEstimated" : "dashboard.hostCpu")}
             fraction={cpuFraction}
           />
           <StatCard

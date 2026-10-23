@@ -219,11 +219,11 @@ export interface ServerSnapshot {
 }
 
 export interface ProcessMetrics {
-  cpu_percent: number;
+  cpu_percent: number | null;
   /** Approximate number of logical CPUs consumed by the process. */
-  cpu_cores: number;
+  cpu_cores: number | null;
   /** Process CPU normalized against the panel host's logical CPU capacity. */
-  cpu_host_percent: number;
+  cpu_host_percent: number | null;
   logical_cpu_count: number;
   /** Resident memory (RSS), in MiB. */
   memory_mb: number;
@@ -334,7 +334,9 @@ export interface FileEntry {
 }
 
 export interface SystemStats {
-  cpu_percent: number;
+  cpu_percent: number | null;
+  /** Android host load may be estimated from kernel idle counters. */
+  cpu_estimated?: boolean;
   memory_used_mb: number;
   memory_total_mb: number;
   servers_online: number;

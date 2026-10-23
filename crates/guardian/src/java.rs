@@ -41,7 +41,27 @@ pub struct SystemDiscovery;
 
 impl DiscoveryBackend for SystemDiscovery {
     fn discover(&self) -> Result<Vec<JavaInstallation>, java_path::Error> {
-        java_path::discover()
+        system_discovery(
+            java_path::Platform::current(),
+            java_path::discovery::termux::prefix(),
+        )
+        .search()
+    }
+}
+
+fn system_discovery(
+    platform: java_path::Platform,
+    termux_prefix: Option<PathBuf>,
+) -> java_path::Discovery {
+    let discovery = java_path::Discovery::new();
+    // Recent Termux packages keep versioned JDKs under lib/jvm. Include
+    // all of them, even when PATH/JAVA_HOME selects a different major.
+    if platform == java_path::Platform::Termux {
+        let prefix =
+            termux_prefix.unwrap_or_else(|| PathBuf::from("/data/data/com.termux/files/usr"));
+        discovery.root(prefix.join("lib/jvm"))
+    } else {
+        discovery
     }
 }
 
@@ -224,6 +244,38 @@ mod tests {
         let resolver =
             JavaResolver::with_backend("/data", backend.clone()).with_ttl(Duration::from_secs(60));
         (resolver, backend)
+    }
+
+    #[test]
+    fn termux_discovers_all_versioned_jdks_without_path_or_java_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        for major in [17, 21] {
+            let home = tmp.path().join(format!("lib/jvm/java-{major}-openjdk"));
+            std::fs::create_dir_all(home.join("bin")).unwrap();
+            let launcher = if cfg!(windows) { "java.exe" } else { "java" };
+            std::fs::write(home.join("bin").join(launcher), b"not executed").unwrap();
+            std::fs::write(
+                home.join("release"),
+                format!("JAVA_VERSION=\"{major}.0.1\"\nOS_ARCH=\"aarch64\"\nOS_NAME=\"Linux\"\n"),
+            )
+            .unwrap();
+        }
+        let mut installs = system_discovery(java_path::Platform::Termux, Some(tmp.path().into()))
+            .java_home(false)
+            .path(false)
+            .system_dirs(false)
+            .tool_stores(false)
+            .inspect_options(java_path::InspectOptions::strict())
+            .search()
+            .unwrap();
+        installs.sort_by_key(JavaInstallation::major);
+        assert_eq!(
+            installs
+                .iter()
+                .map(JavaInstallation::major)
+                .collect::<Vec<_>>(),
+            [17, 21]
+        );
     }
 
     #[test]
