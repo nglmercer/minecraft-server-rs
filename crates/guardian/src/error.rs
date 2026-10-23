@@ -144,6 +144,14 @@ impl Error {
             | Error::SandboxUnavailable
             | Error::UnsupportedInstaller { .. }
             | Error::TermuxJavaRequired(_) => self.to_string(),
+            Error::Core(minecraft_core::Error::UnsupportedVersion { .. }) =>
+                "no downloadable server build exists for this version; choose another version or retry the version checks".into(),
+            Error::Core(minecraft_core::Error::BuildNotFound { .. }) =>
+                "the selected server build is unavailable; select another build or reinstall".into(),
+            Error::Core(minecraft_core::Error::Http { .. } | minecraft_core::Error::Api { .. }) =>
+                "the server download service could not be reached or rejected the request; retry and check version availability".into(),
+            Error::Core(minecraft_core::Error::HashMismatch { .. } | minecraft_core::Error::SizeMismatch { .. }) =>
+                "the server download failed verification; retry the installation".into(),
             Error::JavaUnavailable(major, _) => format!("Java {major} is unavailable"),
             Error::Java(_)
             | Error::Core(_)
@@ -152,5 +160,28 @@ impl Error {
             | Error::Serde(_)
             | Error::Task(_) => "an internal error prevented the server operation".into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    #[test]
+    fn download_errors_are_actionable_without_exposing_upstream_bodies() {
+        let error = Error::Core(minecraft_core::Error::Api {
+            url: "https://example.invalid/private".into(),
+            status: 429,
+            body: "sensitive upstream response".into(),
+        });
+        let message = error.client_message();
+        assert!(message.contains("retry"));
+        assert!(!message.contains("private"));
+        assert!(!message.contains("sensitive"));
+        let missing = Error::Core(minecraft_core::Error::UnsupportedVersion {
+            provider: "paper".into(),
+            version: "missing".into(),
+        });
+        assert!(missing.client_message().contains("choose another version"));
     }
 }

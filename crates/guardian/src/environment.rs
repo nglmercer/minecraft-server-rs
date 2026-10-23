@@ -169,6 +169,7 @@ pub async fn resolve_jar(
     let core_for_progress = config.core.clone();
     let version_for_progress = config.version.clone();
     let client = MinecraftClient::builder()
+        .user_agent("minecraft-server-rs/0.1 (https://github.com/nglmercer/minecraft-server-rs)")
         .on_progress(std::sync::Arc::new(move |p: minecraft_core::Progress| {
             let fraction = p
                 .total
