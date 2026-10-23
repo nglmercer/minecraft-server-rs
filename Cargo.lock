@@ -2549,6 +2549,7 @@ dependencies = [
  "rand 0.9.5",
  "reqwest",
  "rust-embed",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha1",

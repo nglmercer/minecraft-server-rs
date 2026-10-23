@@ -79,6 +79,8 @@ export const en = {
     newServer: "New server",
     hostCpu: "Host CPU",
     hostCpuShort: "CPU",
+    hostCpuEstimated: "Host CPU (estimated)",
+    hostCpuEstimatedShort: "CPU est.",
     hostMemory: "Host memory",
     hostMemoryShort: "RAM",
     serversOnline: "Servers online",

@@ -52,6 +52,26 @@ describe("Dashboard create server form", () => {
     expect(screen.queryByText("0%")).not.toBeInTheDocument();
   });
 
+  it("renders live estimated Android host CPU", async () => {
+    apiMock.system.mockResolvedValue({
+      cpu_percent: 37.6,
+      cpu_estimated: true,
+      memory_used_mb: 1024,
+      memory_total_mb: 4096,
+      servers_online: 0,
+    });
+    render(
+      <I18nProvider>
+        <ToastProvider>
+          <Dashboard user={{ username: "admin", admin: true }} onOpen={vi.fn()} />
+        </ToastProvider>
+      </I18nProvider>,
+    );
+    expect(await screen.findByText("38%")).toBeInTheDocument();
+    expect(screen.getByText("Host CPU (estimated)")).toBeInTheDocument();
+    expect(screen.queryByText("Unknown")).not.toBeInTheDocument();
+  });
+
   it("sends exactly one create request for one submit button click", async () => {
     render(
       <I18nProvider>

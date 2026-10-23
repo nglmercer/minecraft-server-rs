@@ -2,7 +2,7 @@
 
 Linux, macOS, Windows, and Android through Termux. `cargo check --workspace --all-targets --target x86_64-pc-windows-gnu` is clean, and the platform-specific pieces are handled rather than assumed:
 
-* System statistics come from [`sysinfo`](https://crates.io/crates/sysinfo), which already abstracts Linux, Windows, macOS and the BSDs. No second library is needed, and none of the panel's own code reads `/proc` or shells out to `ps`, `du` or `df`.
+* System statistics normally come from [`sysinfo`](https://crates.io/crates/sysinfo). On Android, when global CPU counters are denied, the panel estimates host load from kernel CPU idle counters and measures JVM CPU from its process-time counters. See [Termux](termux.md). Metrics do not shell out to `ps`, `top`, `du`, or `df`.
 * Java discovery and installation are `java-path`'s problem, and it knows about `java.exe` and platform-specific archive layouts.
 * Shutdown handles `SIGTERM` on Unix and falls back to Ctrl-C elsewhere.
 * File-manager paths reject Windows drive prefixes along with `..`, and API responses always use forward slashes whatever the host uses.

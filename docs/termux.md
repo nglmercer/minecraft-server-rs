@@ -106,13 +106,21 @@ settings to allow Termux to run in the background. A wake lock helps with CPU
 sleep but cannot prevent Android from killing the app or its child processes.
 Stop servers through the panel and shut down the panel with Ctrl-C or SIGTERM
 so worlds are saved. Start the panel again after reboot; automatic boot
-startup can be managed separately with Termux:Boot.
+startup can be managed separately with Termux:Boot. To resume a particular saved
+server explicitly when starting the panel, add `--start-server <server-id>`;
+repeat the option for several servers. Without that option servers stay stopped.
+This also allows a maintenance restart to resume a server while preserving the
+existing administrator account.
 
 Keep JVM heaps and player counts appropriate to the phone's RAM, thermal
-limits, and storage. Start with a small heap and low view distance. Host CPU
-and other process statistics may be restricted by Android. The API returns
-`null` for unavailable CPU readings, the UI displays unknown, and readable
-process RSS remains visible. Unavailable readings are not spare capacity. Back up worlds outside the device.
+limits, and storage. Start with a small heap and low view distance. Android commonly blocks `/proc/stat`. The panel estimates host CPU load from
+readable kernel CPU idle counters under `/sys/devices/system/cpu`, labels it
+as estimated, and measures JVM CPU from its own process-time counters. Idle
+accounting can be delayed until a CPU exits an idle state, so short-interval
+host estimates can be noisy; JVM CPU uses independent process-time deltas. Neither
+requires root. Samples reset after CPU hotplug or counter resets. If the device
+also blocks these counters, the API returns `null` and the UI displays unknown;
+readable process RSS remains visible. Unavailable readings are not spare capacity. Back up worlds outside the device.
 Embedded Playit works through the panel's web UI; internet access, account
 claiming, and tunnel availability still depend on the Playit service.
 

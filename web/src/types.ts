@@ -335,6 +335,8 @@ export interface FileEntry {
 
 export interface SystemStats {
   cpu_percent: number | null;
+  /** Android host load may be estimated from kernel idle counters. */
+  cpu_estimated?: boolean;
   memory_used_mb: number;
   memory_total_mb: number;
   servers_online: number;

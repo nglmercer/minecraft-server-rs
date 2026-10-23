@@ -19,6 +19,8 @@
     windows_subsystem = "windows"
 )]
 
+#[cfg(any(target_os = "android", test))]
+mod android_cpu;
 mod api;
 mod auth;
 mod backups;
@@ -75,6 +77,10 @@ struct Args {
     /// may override the default without needing a flag.
     #[arg(long, env = "MCPANEL_BIND", value_name = "ADDR")]
     bind: Option<SocketAddr>,
+
+    /// Start a saved server explicitly after panel startup; repeat for multiple servers.
+    #[arg(long, value_name = "ID")]
+    start_server: Vec<String>,
 
     /// Allow browser requests from any origin. Needed only for `npm run dev`.
     #[arg(long, env = "MCPANEL_DEV_CORS")]
@@ -288,6 +294,13 @@ async fn main() -> Result<()> {
             );
         }
 
+        // Explicit CLI opt-in lets a service or maintenance restart resume a
+        // chosen server without changing the default of leaving servers stopped.
+        for id in args.start_server.iter().collect::<std::collections::BTreeSet<_>>() {
+            state.guardian(id).await?.start().await?;
+            tracing::info!(server = %id, "starting server requested on the command line");
+        }
+
         // First-run desktop experience: open setup automatically when uninitialized.
         if state.store.read().await.users.is_empty() {
             let setup_url = format!("{}/setup", panel_url_str);
@@ -483,6 +496,13 @@ mod tests {
 
         add_security_headers(&mut headers, true);
         assert!(headers.get(header::STRICT_TRANSPORT_SECURITY).is_some());
+    }
+
+    #[test]
+    fn starting_saved_servers_requires_explicit_cli_opt_in() {
+        assert!(Args::parse_from(["mcpanel"]).start_server.is_empty());
+        let args = Args::parse_from(["mcpanel", "--start-server", "one", "--start-server", "two"]);
+        assert_eq!(args.start_server, ["one", "two"]);
     }
 
     #[test]

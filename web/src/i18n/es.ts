@@ -81,6 +81,8 @@ export const es: Dictionary = {
     newServer: "Nuevo servidor",
     hostCpu: "CPU del host",
     hostCpuShort: "CPU",
+    hostCpuEstimated: "CPU del host (estimada)",
+    hostCpuEstimatedShort: "CPU est.",
     hostMemory: "Memoria del host",
     hostMemoryShort: "RAM",
     serversOnline: "Servidores en línea",
