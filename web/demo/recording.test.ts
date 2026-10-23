@@ -1,5 +1,5 @@
-import { readFile, rm, stat, writeFile } from "node:fs/promises";
-import { describe, expect, it, vi } from "vitest";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { DemoBrowser } from "./browser.js";
 import {
   ChapterLog,
@@ -41,6 +41,9 @@ function fakeHandle(stagingPath: string): DemoBrowser {
 }
 
 describe("screencast recording publication", () => {
+  beforeAll(async () => {
+    await mkdir(recordingDir(), { recursive: true });
+  });
   it("generates a safe staging path inside the demo artifact directory", () => {
     const path = createRecordingStagingPath("first run/quality");
     expect(path.startsWith(recordingDir())).toBe(true);

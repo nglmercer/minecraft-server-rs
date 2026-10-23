@@ -42,6 +42,13 @@ pub fn hidden_command(program: impl AsRef<OsStr>) -> std::process::Command {
 /// Uses a direct executable invocation (`rundll32.exe` on Windows,
 /// `xdg-open` family on Linux) so a URL can never become shell syntax.
 pub fn open_browser(url: &str) {
+    #[cfg(target_os = "android")]
+    {
+        if hidden_command("termux-open-url").arg(url).spawn().is_err() {
+            tracing::warn!("could not open browser; open the setup/recovery URL manually");
+        }
+        return;
+    }
     #[cfg(windows)]
     {
         // rundll32 is a console program; without CREATE_NO_WINDOW it allocates
@@ -71,7 +78,11 @@ pub fn open_browser(url: &str) {
         tracing::warn!("could not open browser for setup/recovery");
         return;
     }
-    #[cfg(not(any(windows, all(target_os = "linux", not(target_env = "musl")))))]
+    #[cfg(not(any(
+        target_os = "android",
+        windows,
+        all(target_os = "linux", not(target_env = "musl"))
+    )))]
     {
         let _ = url;
         tracing::warn!("browser opening not supported on this platform");

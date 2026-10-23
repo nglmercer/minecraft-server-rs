@@ -91,10 +91,33 @@ pub async fn resolve_java_with(
     resolver: &JavaResolver,
     on_progress: impl Fn(String, Option<f32>) + Send + Sync + Clone + 'static,
 ) -> Result<JavaInstallation> {
+    resolve_java_on(
+        major,
+        data_dir,
+        resolver,
+        java_path::Platform::current(),
+        on_progress,
+    )
+    .await
+}
+
+async fn resolve_java_on(
+    major: u32,
+    data_dir: &Path,
+    resolver: &JavaResolver,
+    platform: java_path::Platform,
+    on_progress: impl Fn(String, Option<f32>) + Send + Sync + Clone + 'static,
+) -> Result<JavaInstallation> {
     if let Ok(installs) = resolver.javas() {
         if let Ok(found) = installs.select().major(major).current_arch().best() {
             return Ok(found.clone());
         }
+    }
+
+    // Generic Linux Temurin archives require glibc and cannot execute in
+    // Android's Bionic environment. Package installation stays operator-owned.
+    if platform == java_path::Platform::Termux {
+        return Err(Error::TermuxJavaRequired(major));
     }
 
     on_progress(format!("installing Java {major}"), None);
@@ -513,6 +536,52 @@ fn now_rfc3339() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn missing_android_java_reports_package_install_without_creating_cache() {
+        use crate::java::CountingDiscovery;
+        use std::sync::Arc;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("data");
+        let resolver = JavaResolver::with_backend(&data, Arc::new(CountingDiscovery::new(vec![])));
+        let error = resolve_java_on(21, &data, &resolver, java_path::Platform::Termux, |_, _| {
+            panic!("must not download")
+        })
+        .await
+        .unwrap_err();
+        assert!(error.client_message().contains("pkg install openjdk-21"));
+        assert!(!data.exists());
+    }
+
+    #[tokio::test]
+    async fn installed_android_java_is_reused_without_provisioning() {
+        use crate::java::CountingDiscovery;
+        use std::sync::Arc;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let java = JavaInstallation {
+            home: tmp.path().join("jdk"),
+            java: tmp.path().join("jdk/bin/java"),
+            javac: None,
+            version: java_path::JavaVersion::parse("21.0.1").unwrap(),
+            vendor: None,
+            architecture: java_path::Architecture::current(),
+            platform: java_path::Platform::Termux,
+            kind: java_path::JavaKind::Jdk,
+            source: java_path::DiscoverySource::Termux,
+        };
+        let resolver = JavaResolver::with_backend(
+            tmp.path(),
+            Arc::new(CountingDiscovery::new(vec![java.clone()])),
+        );
+        let found = resolve_java_with(21, tmp.path(), &resolver, |_, _| {
+            panic!("must not download")
+        })
+        .await
+        .unwrap();
+        assert_eq!(found.java, java.java);
+    }
 
     #[test]
     fn setting_a_property_replaces_only_that_line() {

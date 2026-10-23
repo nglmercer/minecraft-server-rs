@@ -12,6 +12,10 @@ pub enum Error {
     #[error("no usable Java {0} found, and installing one failed: {1}")]
     JavaUnavailable(u32, String),
 
+    /// Android requires a package-built JDK rather than a glibc archive.
+    #[error("Java {0} is unavailable. Install it with `pkg install openjdk-{0}` (check `pkg search openjdk` for available versions), then refresh the Java catalog. Linux JDK downloads cannot run on Android.")]
+    TermuxJavaRequired(u32),
+
     /// The underlying Java discovery/provisioning library failed.
     #[error("java: {0}")]
     Java(#[from] java_path::Error),
@@ -138,7 +142,8 @@ impl Error {
             | Error::InvalidCommand(_)
             | Error::StartCancelled
             | Error::SandboxUnavailable
-            | Error::UnsupportedInstaller { .. } => self.to_string(),
+            | Error::UnsupportedInstaller { .. }
+            | Error::TermuxJavaRequired(_) => self.to_string(),
             Error::JavaUnavailable(major, _) => format!("Java {major} is unavailable"),
             Error::Java(_)
             | Error::Core(_)

@@ -34,6 +34,24 @@ describe("Dashboard create server form", () => {
     apiMock.createServer.mockResolvedValue({});
   });
 
+  it("shows unknown host CPU when Android denies CPU statistics", async () => {
+    apiMock.system.mockResolvedValue({
+      cpu_percent: null,
+      memory_used_mb: 1,
+      memory_total_mb: 2,
+      servers_online: 0,
+    });
+    render(
+      <I18nProvider>
+        <ToastProvider>
+          <Dashboard user={{ username: "admin", admin: true }} onOpen={vi.fn()} />
+        </ToastProvider>
+      </I18nProvider>,
+    );
+    expect(await screen.findByText("Unknown")).toBeInTheDocument();
+    expect(screen.queryByText("0%")).not.toBeInTheDocument();
+  });
+
   it("sends exactly one create request for one submit button click", async () => {
     render(
       <I18nProvider>

@@ -31,6 +31,9 @@ winget install -e --id LLVM.LLVM
 
 Two Linux builds are published: `linux-x86_64` (glibc) and `linux-x86_64-static` (musl/static) for Alpine or older distros.
 
+For Android, follow the [Termux installation guide](termux.md). Use the Android
+ARM64 binary or build natively; Linux release binaries cannot run in Termux.
+
 ## First run
 
 The first run prints a generated `admin` password. It is shown once — save it.

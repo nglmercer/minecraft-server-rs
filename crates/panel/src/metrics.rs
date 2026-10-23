@@ -20,8 +20,8 @@ const DISK_TTL: Duration = Duration::from_secs(60);
 /// What the machine as a whole is doing.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct HostMetrics {
-    /// Busy percentage across all cores, 0..=100.
-    pub cpu_percent: f32,
+    /// Busy percentage across all cores, 0..=100; unavailable on restricted hosts.
+    pub cpu_percent: Option<f32>,
     /// Physical memory in use, in mebibytes.
     pub memory_used_mb: u64,
     /// Physical memory installed, in mebibytes.
@@ -33,11 +33,11 @@ pub struct HostMetrics {
 pub struct ProcessMetrics {
     /// Existing sysinfo value: 100 means one fully occupied logical CPU, so a
     /// multi-threaded process can legitimately exceed 100.
-    pub cpu_percent: f32,
+    pub cpu_percent: Option<f32>,
     /// Approximate number of logical CPUs consumed.
-    pub cpu_cores: f32,
+    pub cpu_cores: Option<f32>,
     /// Process CPU normalized against the whole panel host, in 0..=100.
-    pub cpu_host_percent: f32,
+    pub cpu_host_percent: Option<f32>,
     /// Logical CPUs available to the panel host.
     pub logical_cpu_count: usize,
     /// Resident memory (RSS) in mebibytes.
@@ -91,14 +91,17 @@ impl Metrics {
             ProcessRefreshKind::nothing().with_cpu().with_memory(),
         );
 
+        // sysinfo needs the host CPU time baseline to compute process CPU.
+        // Android commonly denies it while still allowing this app's RSS.
+        let cpu_available = !system.cpus().is_empty();
         let process = system.process(pid)?;
         let cpu_percent = process.cpu_usage();
         let (cpu_cores, cpu_host_percent) =
             normalize_process_cpu(cpu_percent, self.logical_cpu_count);
         Some(ProcessMetrics {
-            cpu_percent,
-            cpu_cores,
-            cpu_host_percent,
+            cpu_percent: cpu_available.then_some(cpu_percent),
+            cpu_cores: cpu_available.then_some(cpu_cores),
+            cpu_host_percent: cpu_available.then_some(cpu_host_percent),
             logical_cpu_count: self.logical_cpu_count,
             memory_mb: process.memory() / 1024 / 1024,
         })
@@ -129,7 +132,7 @@ impl Metrics {
         };
 
         HostMetrics {
-            cpu_percent,
+            cpu_percent: (!system.cpus().is_empty()).then_some(cpu_percent),
             memory_used_mb: system.used_memory() / 1024 / 1024,
             memory_total_mb: system.total_memory() / 1024 / 1024,
         }
@@ -218,10 +221,19 @@ mod tests {
         // Establish a baseline, then read again after an idle gap.
         metrics.host();
         std::thread::sleep(MINIMUM_CPU_UPDATE_INTERVAL * 2);
-        let idle = metrics.host().cpu_percent;
+        let Some(idle) = metrics.host().cpu_percent else {
+            // Restricted Android hosts have no CPU baseline. Verify the API
+            // reports absence instead of an idle-looking 0, without burning CPU.
+            assert!(metrics.system.lock().unwrap().cpus().is_empty());
+            assert!(serde_json::to_value(metrics.host()).unwrap()["cpu_percent"].is_null());
+            return;
+        };
 
         saturate(MINIMUM_CPU_UPDATE_INTERVAL * 3);
-        let busy = metrics.host().cpu_percent;
+        let busy = metrics
+            .host()
+            .cpu_percent
+            .expect("CPU baseline disappeared");
 
         // Asserting `busy > 0` would not catch anything: a freshly built System
         // reports an average since boot, which is non-zero and never moves. What
@@ -233,6 +245,19 @@ mod tests {
             busy > idle + delta || busy > 90.0,
             "idle {idle}% then saturated {busy}%: the reading is not tracking load"
         );
+    }
+
+    #[test]
+    fn restricted_cpu_does_not_hide_readable_process_memory() {
+        let metrics = Metrics::default();
+        let process = metrics
+            .of(std::process::id())
+            .expect("own process is visible");
+        assert!(process.memory_mb > 0);
+        let cpu_available = !metrics.system.lock().unwrap().cpus().is_empty();
+        assert_eq!(process.cpu_percent.is_some(), cpu_available);
+        assert_eq!(process.cpu_cores.is_some(), cpu_available);
+        assert_eq!(process.cpu_host_percent.is_some(), cpu_available);
     }
 
     #[test]

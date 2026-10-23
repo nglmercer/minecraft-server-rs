@@ -84,6 +84,20 @@ describe("server process metric semantics", () => {
     expect(memoryCard).not.toHaveTextContent("0 MiB");
   });
 
+  it("keeps RSS visible when Android restricts CPU counters", async () => {
+    renderDetail(makeServer({
+      cpu_percent: null,
+      cpu_cores: null,
+      cpu_host_percent: null,
+      logical_cpu_count: 8,
+      memory_mb: 512,
+    }));
+    const cpuLabel = await screen.findByText("CPU usage");
+    expect(cpuLabel.closest("section")).toHaveTextContent("—");
+    expect(cpuLabel.closest("section")).not.toHaveTextContent("0.00%");
+    expect(screen.getByText("Process memory (RSS)").closest("section")).toHaveTextContent("512 MiB");
+  });
+
   it("normalizes CPU to host capacity and keeps RSS separate from heap max", async () => {
     renderDetail(
       makeServer({

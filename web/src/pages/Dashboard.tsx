@@ -89,7 +89,7 @@ export function Dashboard({
             compact
             shortLabel={t("dashboard.hostCpuShort")}
             icon={<Icon.Cpu size={18} />}
-            value={`${stats.cpu_percent.toFixed(0)}%`}
+            value={stats.cpu_percent === null ? t("common.unknown") : `${stats.cpu_percent.toFixed(0)}%`}
             max="100%"
             label={t("dashboard.hostCpu")}
             fraction={cpuFraction}
