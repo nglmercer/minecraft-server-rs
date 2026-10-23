@@ -16,6 +16,10 @@ pub enum Error {
     #[error("Java {0} is unavailable. Install it with `pkg install openjdk-{0}` (check `pkg search openjdk` for available versions), then refresh the Java catalog. Linux JDK downloads cannot run on Android.")]
     TermuxJavaRequired(u32),
 
+    /// The standalone APK cannot install desktop or Termux JDK packages.
+    #[error("Java {0} is not bundled in this APK. Choose a server compatible with the Java version shown in the Java catalog, or rebuild the APK with the required Android runtime.")]
+    AndroidJavaRequired(u32),
+
     /// The underlying Java discovery/provisioning library failed.
     #[error("java: {0}")]
     Java(#[from] java_path::Error),
@@ -143,7 +147,8 @@ impl Error {
             | Error::StartCancelled
             | Error::SandboxUnavailable
             | Error::UnsupportedInstaller { .. }
-            | Error::TermuxJavaRequired(_) => self.to_string(),
+            | Error::TermuxJavaRequired(_)
+            | Error::AndroidJavaRequired(_) => self.to_string(),
             Error::JavaUnavailable(major, _) => format!("Java {major} is unavailable"),
             Error::Java(_)
             | Error::Core(_)

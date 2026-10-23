@@ -51,6 +51,7 @@ tray is opened from its menu (AppIndicator sends no click events of its own),
 and `MCPANEL_NO_TRAY=1` turns it off on any platform.
 
 Android/Termux is supported with native Android builds; see [Termux setup](docs/termux.md).
+Experimental standalone APK builds are documented in [android/README.md](android/README.md).
 
 > Full install, data-dir layout, and static vs glibc builds → [docs/getting-started.md](docs/getting-started.md)
 
