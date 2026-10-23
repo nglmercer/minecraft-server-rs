@@ -121,6 +121,12 @@ def main():
             request(server + "/power", {"action": "start"})
             online = wait_status(server, "online")
             assert online["pid"]
+            host = request("/api/system")
+            assert host["memory_total_mb"] > 0
+            assert online["metrics"]["memory_mb"] > 0
+            if host["cpu_percent"] is None:
+                assert online["metrics"]["cpu_percent"] is None
+                assert online["metrics"]["cpu_host_percent"] is None
             assert any("Done (" in line["line"] for line in request(server + "/logs"))
             request(server + "/command", {"command": "list"})
             print("PASS provisioning, real Minecraft online, console command", flush=True)
