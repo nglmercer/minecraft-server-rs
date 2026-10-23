@@ -1,3 +1,9 @@
+export interface CompatibilityView {
+  availability: "available" | "unavailable" | "unknown";
+  support: "supported" | "deprecated" | "unsupported" | "unknown";
+  java_minimum: number | null;
+}
+
 /** Mirrors `guardian::ServerStatus`. */
 export type Status =
   | "offline"

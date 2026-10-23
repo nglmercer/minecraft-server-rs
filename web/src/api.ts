@@ -117,6 +117,8 @@ function startDownload(url: string) {
 }
 
 export const api = {
+  compatibility: (provider: string, version: string) =>
+    request<import("./types").CompatibilityView>(`/catalog/${encodeURIComponent(provider)}/${encodeURIComponent(version)}/compatibility`),
   async login(username: string, password: string): Promise<User> {
     const result = await request<{ user: User }>("/auth/login", {
       method: "POST",

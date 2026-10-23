@@ -1,5 +1,51 @@
 /** English strings. This file is the source of truth for every key. */
 export const en = {
+  launch: {
+    "eulaTitle": "Accept the Minecraft EULA",
+    "eulaBody": "This server cannot start until you explicitly accept the Minecraft EULA. Read it before continuing. Cancelling leaves the server unchanged.",
+    "acceptAndStart": "Accept EULA and start"
+},
+  guide: {
+    "help": "Help · guided tour",
+    "skip": "Close tour",
+    "previous": "Previous",
+    "next": "Next",
+    "done": "Done",
+    "step": "Step {current} of {total}",
+    "createTitle": "Create your server",
+    "createBody": "Choose a server type and Minecraft version. Review build availability, upstream support and the Java requirement before creating it.",
+    "launchTitle": "Start and diagnose",
+    "launchBody": "Accept the EULA when prompted. Preparation downloads Java and the server; starting loads the world. Open the console for progress and startup errors.",
+    "manageTitle": "Manage your server",
+    "manageBody": "Open a server to access its console, files, plugins, backups and settings. You can repeat this guide from Help.",
+    "console": "Start or stop the server here. Follow preparation progress and read the console for errors. An online status confirms startup; an unsupported-version warning alone does not diagnose a crash.",
+    "files": "Browse and edit server files. Back up important files before changing them.",
+    "plugins": "Installed lists your current add-ons. Browse searches versions matching this server. Restart after installing or removing add-ons.",
+    "backups": "Create and restore backups here. Back up the world before upgrades: downgrading a world can damage it.",
+    "settings": "Review Java, memory, EULA and the installed build. Network and recovery options expand separately. Settings apply on the next start."
+},
+  compatibility: {
+    unverified: "The download service could not be verified. This does not establish whether the version is supported or installable. Retry, or explicitly continue without verification.",
+    acknowledgeUnknown: "I understand that build availability has not been verified.",
+    "title": "Version checks",
+    "available": "A downloadable build is available. This does not guarantee plugins or the world are compatible.",
+    "unavailable": "No downloadable build was found for this selection.",
+    "unknown": "Build availability could not be verified. Retry before installing.",
+    "support": {
+        "supported": "Upstream support: supported.",
+        "deprecated": "Upstream support: deprecated.",
+        "unsupported": "Upstream support: ended.",
+        "unknown": "Upstream support: not verified."
+    },
+    "java": "Required Java: {version} or newer.",
+    "javaMismatch": "Selected Java {selected} is below the required Java {required}. Change it before starting.",
+    "warning": "Ended support does not necessarily prevent startup. This version may no longer receive fixes. Use a supported version where possible and back up the world before upgrading.",
+    "acknowledge": "I understand this version may no longer receive support or fixes.",
+    "acknowledged": "Warning reviewed for this selection. Runtime and plugin compatibility still need verification.",
+    "noBuild": "Choose another version or retry. Installing cannot succeed without an available server build.",
+    "retry": "Check again",
+    "official": "Official downloads"
+},
   common: {
     cancel: "Cancel",
     unknown: "Unknown",
@@ -357,6 +403,12 @@ export const en = {
   },
 
   plugins: {
+    searchError: "Search failed. Try again; previous results may be out of date.",
+    sections: "Add-on sections",
+    browse: "Browse plugins / mods",
+    restartHint: "Restart the server after installing or removing add-ons.",
+    loadError: "Could not load installed add-ons.",
+
     searchPlaceholder: "Search Modrinth for {core} {version} {kind}…",
     kindMods: "mods",
     kindPlugins: "plugins",

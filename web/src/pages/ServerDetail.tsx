@@ -1,6 +1,9 @@
 import type { JSX } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { api } from "../api";
+import { useServerPower } from "../useServerPower";
+import { Guide } from "../components/Guide";
+import { Compatibility } from "../components/Compatibility";
 import { Backups } from "../components/Backups";
 import { Console } from "../components/Console";
 import { Files } from "../components/Files";
@@ -51,6 +54,7 @@ export function ServerDetail({
   const t = useT();
   const toast = useToast();
   const menu = useMenu();
+  const guardedPower = useServerPower();
 
   const [server, setServer] = useState<Server | null>(null);
   const [playit, setPlayit] = useState<ServerPlayitView | null>(null);
@@ -93,7 +97,9 @@ export function ServerDetail({
 
   async function power(action: "start" | "stop" | "restart" | "kill") {
     try {
-      const nextServer = await api.power(id, action);
+      if (!server) return;
+      const nextServer = await guardedPower(server, action);
+      if (!nextServer) return;
       setServer(nextServer);
       setProgress(nextServer.status === "preparing" ? nextServer.progress : null);
     } catch (e) {
@@ -307,6 +313,11 @@ export function ServerDetail({
         </nav>
       </header>
 
+      <Guide steps={tabs.map(({ id }) => ({
+        title: t(`server.tabs.${id}` as "server.tabs.console"),
+        body: t(`guide.${id}` as "guide.console"),
+        enter: () => setTab(id),
+      }))} />
       <ServerActivity status={server.status} progress={progress} />
 
       {!server.eula_accepted && <Banner kind="info">{t("server.eulaWarning")}</Banner>}
@@ -416,10 +427,12 @@ function Installed({ server, onChanged }: { server: Server; onChanged: () => voi
   const toast = useToast();
   const dialogs = useDialogs();
   const [busy, setBusy] = useState(false);
+  const [compatible, setCompatible] = useState(false);
 
   const lifecycleBusy = server.status !== "offline" && server.status !== "crashed";
 
   async function update() {
+    if (busy || lifecycleBusy || !compatible) return;
     const confirmed = await dialogs.confirm({
       title: t("settings.updateTitle"),
       body: t("settings.updateBody"),
@@ -440,6 +453,7 @@ function Installed({ server, onChanged }: { server: Server; onChanged: () => voi
   }
 
   async function prepare() {
+    if (busy || lifecycleBusy || !compatible) return;
     setBusy(true);
     try {
       await api.prepare(server.id);
@@ -454,6 +468,7 @@ function Installed({ server, onChanged }: { server: Server; onChanged: () => voi
 
   return (
     <Card title={t("settings.installSection")}>
+      <Compatibility core={server.core} version={server.version} javaMajor={server.java_major} onAllowedChange={setCompatible} />
       {server.installed ? (
         <div class="space-y-1">
           <p class="font-mono text-sm">
@@ -496,7 +511,7 @@ function Installed({ server, onChanged }: { server: Server; onChanged: () => voi
           <Button
             variant="primary"
             class="w-full sm:w-auto"
-            disabled={busy || lifecycleBusy}
+            disabled={busy || lifecycleBusy || !compatible}
             title={lifecycleBusy ? t("settings.mustStopToUpdate") : undefined}
             onClick={prepare}
           >
@@ -505,7 +520,7 @@ function Installed({ server, onChanged }: { server: Server; onChanged: () => voi
         )}
         <Button
           class="w-full sm:w-auto"
-          disabled={busy || lifecycleBusy}
+          disabled={busy || lifecycleBusy || !compatible}
           title={lifecycleBusy ? t("settings.mustStopToUpdate") : undefined}
           onClick={update}
         >
@@ -663,44 +678,55 @@ function Settings({
         </label>
       </Card>
 
-      {playit && <PlayitSettings server={server} playit={playit} user={user} onChanged={onSaved} />}
+      {playit && (
+        <details class="rounded-xl border border-ink-700 p-4">
+          <summary class="cursor-pointer font-semibold">{t("nav.playit")}</summary>
+          <div class="mt-4">
+            <PlayitSettings server={server} playit={playit} user={user} onChanged={onSaved} />
+          </div>
+        </details>
+      )}
 
       <Installed server={server} onChanged={onSaved} />
 
-      <Card title={t("settings.recoverySection")} class="overflow-hidden">
-        <div class="grid gap-3 sm:gap-4 sm:grid-cols-3">
-          <Field label={t("settings.maxRetries")}>
-            <Input
-              type="number"
-              value={form.max_retries}
-              onInput={(e) => set({ max_retries: Number((e.target as HTMLInputElement).value) })}
+      <details class="rounded-xl border border-ink-700 p-4">
+        <summary class="cursor-pointer font-semibold">{t("settings.recoverySection")}</summary>
+        <div class="mt-4">
+          <div class="grid gap-3 sm:gap-4 sm:grid-cols-3">
+            <Field label={t("settings.maxRetries")}>
+              <Input
+                type="number"
+                value={form.max_retries}
+                onInput={(e) => set({ max_retries: Number((e.target as HTMLInputElement).value) })}
+              />
+            </Field>
+            <Field label={t("settings.retryDelay")}>
+              <Input
+                type="number"
+                value={form.retry_delay_secs}
+                onInput={(e) => set({ retry_delay_secs: Number((e.target as HTMLInputElement).value) })}
+              />
+            </Field>
+            <Field label={t("settings.stopTimeout")}>
+              <Input
+                type="number"
+                value={form.stop_timeout_secs}
+                onInput={(e) => set({ stop_timeout_secs: Number((e.target as HTMLInputElement).value) })}
+              />
+            </Field>
+          </div>
+          <label class="mt-3 flex items-start gap-2.5 border-t border-ink-700 pt-3 text-sm text-fg-muted sm:mt-4 sm:items-center">
+            <input
+              type="checkbox"
+              checked={form.auto_restart}
+              onChange={(e) => set({ auto_restart: (e.target as HTMLInputElement).checked })}
+              class="size-4 rounded border-ink-600 bg-ink-900 accent-[var(--color-accent)]"
             />
-          </Field>
-          <Field label={t("settings.retryDelay")}>
-            <Input
-              type="number"
-              value={form.retry_delay_secs}
-              onInput={(e) => set({ retry_delay_secs: Number((e.target as HTMLInputElement).value) })}
-            />
-          </Field>
-          <Field label={t("settings.stopTimeout")}>
-            <Input
-              type="number"
-              value={form.stop_timeout_secs}
-              onInput={(e) => set({ stop_timeout_secs: Number((e.target as HTMLInputElement).value) })}
-            />
-          </Field>
-        </div>
-        <label class="mt-3 flex items-start gap-2.5 border-t border-ink-700 pt-3 text-sm text-fg-muted sm:mt-4 sm:items-center">
-          <input
-            type="checkbox"
-            checked={form.auto_restart}
-            onChange={(e) => set({ auto_restart: (e.target as HTMLInputElement).checked })}
-            class="size-4 rounded border-ink-600 bg-ink-900 accent-[var(--color-accent)]"
-          />
-          {t("settings.autoRestart")}
-        </label>
-      </Card>
+            {t("settings.autoRestart")}
+          </label>
+
+      </div>
+      </details>
 
       <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
         <Button type="submit" variant="primary" class="w-full sm:w-auto" disabled={busy}>
