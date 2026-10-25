@@ -7,7 +7,7 @@ use axum::extract::{Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
 use minecraft_core::MinecraftClient;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::auth::Identity;
@@ -24,6 +24,7 @@ pub struct ProviderView {
 
 fn client() -> ApiResult<MinecraftClient> {
     MinecraftClient::builder()
+        .user_agent("minecraft-server-rs/0.1 (https://github.com/nglmercer/minecraft-server-rs)")
         .build()
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("minecraft client: {e}")))
 }
@@ -101,6 +102,116 @@ async fn builds(
     ))
 }
 
+/// Availability is independent of upstream maintenance status. An archived
+/// Paper version can remain downloadable after its support has ended.
+#[derive(Debug, Serialize)]
+pub struct CompatibilityView {
+    availability: &'static str,
+    support: &'static str,
+    java_minimum: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct PaperVersionResponse {
+    version: PaperVersionMetadata,
+}
+
+#[derive(Deserialize)]
+struct PaperVersionMetadata {
+    support: PaperSupport,
+    java: Option<PaperJava>,
+}
+
+#[derive(Deserialize)]
+struct PaperSupport {
+    status: String,
+}
+
+#[derive(Deserialize)]
+struct PaperJava {
+    version: PaperJavaVersion,
+}
+
+#[derive(Deserialize)]
+struct PaperJavaVersion {
+    minimum: u32,
+}
+
+fn support_status(status: &str) -> &'static str {
+    match status {
+        "SUPPORTED" => "supported",
+        "DEPRECATED" => "deprecated",
+        "UNSUPPORTED" => "unsupported",
+        _ => "unknown",
+    }
+}
+
+/// Read maintenance metadata separately from the build resolver. Network,
+/// rate-limit and schema errors must never be reported as "unsupported".
+async fn paper_metadata(provider: &str, version: &str) -> Option<PaperVersionResponse> {
+    if !matches!(provider, "paper" | "folia" | "velocity" | "waterfall") {
+        return None;
+    }
+    let http = reqwest::Client::builder()
+        .user_agent("minecraft-server-rs/0.1 (https://github.com/nglmercer/minecraft-server-rs)")
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .ok()?;
+    let mut url = reqwest::Url::parse("https://fill.papermc.io/v3/projects/").ok()?;
+    // Path components cannot turn a version into a query, fragment or new host.
+    url.path_segments_mut()
+        .ok()?
+        .pop_if_empty()
+        .extend([provider, "versions", version]);
+    http.get(url)
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .await
+        .ok()
+}
+
+fn build_availability(result: &minecraft_core::Result<Vec<minecraft_core::Build>>) -> &'static str {
+    match result {
+        Ok(builds) if !builds.is_empty() => "available",
+        Ok(_) | Err(minecraft_core::Error::UnsupportedVersion { .. }) => "unavailable",
+        _ => "unknown",
+    }
+}
+
+async fn compatibility(
+    _: Identity,
+    Path((provider, version)): Path<(String, String)>,
+) -> ApiResult<Json<CompatibilityView>> {
+    let client = client()?;
+    // Validate the provider before doing any upstream I/O.
+    client
+        .provider(&provider)
+        .map_err(|_| ApiError::BadRequest("unknown provider".into()))?;
+    let (builds, metadata) = tokio::join!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            client.builds(&provider, &version)
+        ),
+        paper_metadata(&provider, &version),
+    );
+    let availability = builds.as_ref().map_or("unknown", build_availability);
+    let (support, java_minimum) = metadata.map_or(("unknown", None), |metadata| {
+        (
+            support_status(&metadata.version.support.status),
+            metadata.version.java.map(|java| java.version.minimum),
+        )
+    });
+    Ok(Json(CompatibilityView {
+        availability,
+        support,
+        java_minimum,
+    }))
+}
+
 /// A Java installation the host already has.
 #[derive(Serialize)]
 pub struct JavaView {
@@ -176,6 +287,10 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/catalog/providers", get(providers))
         .route("/catalog/{provider}/versions", get(versions))
         .route("/catalog/{provider}/{version}/builds", get(builds))
+        .route(
+            "/catalog/{provider}/{version}/compatibility",
+            get(compatibility),
+        )
         .route("/catalog/javas", get(javas))
         .route("/system", get(system))
 }
@@ -185,6 +300,38 @@ mod tests {
     use super::*;
     use java_path::{Architecture, DiscoverySource, JavaKind, JavaVersion, Platform};
     use std::path::PathBuf;
+
+    #[test]
+    fn maintenance_status_is_not_download_availability() {
+        let metadata: PaperVersionResponse = serde_json::from_str(
+            r#"{
+            "version": {"id":"1.21.11", "support":{"status":"UNSUPPORTED"},
+                "java":{"version":{"minimum":21}}}, "builds":[133]
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            support_status(&metadata.version.support.status),
+            "unsupported"
+        );
+        assert_eq!(metadata.version.java.unwrap().version.minimum, 21);
+        assert_eq!(support_status("FUTURE_STATUS"), "unknown");
+    }
+
+    #[test]
+    fn network_failures_do_not_mean_no_builds() {
+        let unavailable = Err(minecraft_core::Error::UnsupportedVersion {
+            provider: "paper".into(),
+            version: "missing".into(),
+        });
+        let network = Err(minecraft_core::Error::Http {
+            url: "https://example.invalid".into(),
+            message: "timeout".into(),
+        });
+        assert_eq!(build_availability(&unavailable), "unavailable");
+        assert_eq!(build_availability(&network), "unknown");
+        assert_eq!(build_availability(&Ok(vec![])), "unavailable");
+    }
 
     fn installation() -> java_path::JavaInstallation {
         java_path::JavaInstallation {

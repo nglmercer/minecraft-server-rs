@@ -213,7 +213,7 @@ function canReceiveFocus(element: HTMLElement): boolean {
 type ConfirmRequest = {
   kind: "confirm";
   title: string;
-  body?: string;
+  body?: ComponentChildren;
   confirmLabel?: string;
   danger?: boolean;
 };

@@ -1,3 +1,4 @@
+import { DialogProvider } from "../components/Modal";
 import { render, screen, waitFor } from "@testing-library/preact";
 import { describe, expect, it, vi } from "vitest";
 import { Dashboard } from "./Dashboard";
@@ -14,6 +15,7 @@ const apiMock = vi.hoisted(() => ({
     servers_online: 0,
   }),
   power: vi.fn(),
+  compatibility: vi.fn().mockResolvedValue({ availability: "available", support: "supported", java_minimum: 21 }),
   providers: vi.fn().mockResolvedValue([{ id: "paper", server: true }]),
   versions: vi.fn().mockResolvedValue(["1.21.8"]),
   createServer: vi.fn().mockResolvedValue({}),
@@ -58,10 +60,13 @@ function makeServer(overrides: Partial<Server>): Server {
 
 function renderDashboard(servers: Server[]) {
   apiMock.servers.mockResolvedValue(servers);
-  render(
+  localStorage.setItem("mcpanel:guide:v1:dashboard:admin", "seen");
+    render(
     <I18nProvider>
       <ToastProvider>
-        <Dashboard user={{ username: "admin", admin: true }} onOpen={vi.fn()} />
+        <DialogProvider>
+          <Dashboard user={{ username: "admin", admin: true }} onOpen={vi.fn()} />
+        </DialogProvider>
       </ToastProvider>
     </I18nProvider>,
   );

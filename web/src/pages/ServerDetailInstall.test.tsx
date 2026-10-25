@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/preact";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../i18n";
 import { MenuProvider } from "../components/Menu";
 import { DialogProvider } from "../components/Modal";
@@ -9,6 +9,7 @@ import type { Server } from "../types";
 
 const apiMock = vi.hoisted(() => ({
   server: vi.fn(),
+  compatibility: vi.fn().mockResolvedValue({ availability: "available", support: "supported", java_minimum: 21 }),
   serverPlayit: vi.fn(),
   openConsole: vi.fn(),
   reinstall: vi.fn(),
@@ -78,6 +79,7 @@ async function openSettings(server: Server) {
 }
 
 describe("ServerDetail installed build", () => {
+  beforeEach(() => { apiMock.compatibility.mockResolvedValue({ availability: "available", support: "supported", java_minimum: 21 }); });
   it("renders exactly one Install button for a fresh server", async () => {
     await openSettings(makeServer({ installed: null, needs_install: true }));
     expect(screen.getAllByRole("button", { name: "Install" })).toHaveLength(1);

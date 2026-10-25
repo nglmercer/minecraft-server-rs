@@ -2,6 +2,52 @@ import type { Dictionary } from "./en";
 
 /** Spanish strings. Every key in `en` must be present here. */
 export const es: Dictionary = {
+  launch: {
+    "eulaTitle": "Aceptar la EULA de Minecraft",
+    "eulaBody": "Este servidor no puede iniciar hasta que aceptes explícitamente la EULA de Minecraft. Léela antes de continuar. Cancelar no inicia ni reinicia el servidor.",
+    "acceptAndStart": "Aceptar EULA e iniciar"
+},
+  guide: {
+    "help": "Ayuda · guía interactiva",
+    "skip": "Cerrar guía",
+    "previous": "Anterior",
+    "next": "Siguiente",
+    "done": "Finalizar",
+    "step": "Paso {current} de {total}",
+    "createTitle": "Crea tu servidor",
+    "createBody": "Elige el tipo de servidor y la versión de Minecraft. Revisa la disponibilidad de builds, el soporte oficial y el requisito de Java antes de crearlo.",
+    "launchTitle": "Inicia y diagnostica",
+    "launchBody": "Acepta la EULA cuando se solicite. La preparación descarga Java y el servidor; el inicio carga el mundo. Abre la consola para ver el progreso y los errores.",
+    "manageTitle": "Administra tu servidor",
+    "manageBody": "Abre un servidor para acceder a consola, archivos, plugins, copias y configuración. Puedes repetir esta guía desde Ayuda.",
+    "console": "Inicia o detén el servidor aquí. Sigue la preparación y revisa los errores en la consola. El estado en línea confirma el inicio; un aviso de versión sin soporte por sí solo no diagnostica un fallo.",
+    "files": "Explora y edita archivos del servidor. Guarda una copia de los archivos importantes antes de modificarlos.",
+    "plugins": "Instalados muestra tus complementos. Buscar filtra versiones para este servidor. Reinicia después de instalar o eliminar complementos.",
+    "backups": "Crea y restaura copias aquí. Respalda el mundo antes de actualizar: volver a una versión anterior puede dañarlo.",
+    "settings": "Revisa Java, memoria, EULA y la build instalada. Las opciones de red y recuperación se despliegan por separado. Los ajustes se aplican en el siguiente inicio."
+},
+  compatibility: {
+    unverified: "No se pudo verificar el servicio de descargas. Esto no determina si la versión tiene soporte o puede instalarse. Reintenta o continúa explícitamente sin verificación.",
+    acknowledgeUnknown: "Entiendo que la disponibilidad de builds no se ha verificado.",
+    "title": "Comprobaciones de versión",
+    "available": "Hay una build disponible para descargar. Esto no garantiza la compatibilidad de plugins o del mundo.",
+    "unavailable": "No se encontró una build descargable para esta selección.",
+    "unknown": "No se pudo comprobar la disponibilidad. Reintenta antes de instalar.",
+    "support": {
+        "supported": "Soporte oficial: vigente.",
+        "deprecated": "Soporte oficial: obsoleto.",
+        "unsupported": "Soporte oficial: finalizado.",
+        "unknown": "Soporte oficial: sin verificar."
+    },
+    "java": "Java requerido: {version} o posterior.",
+    "javaMismatch": "Java {selected} es inferior al requisito Java {required}. Cámbialo antes de iniciar.",
+    "warning": "El fin del soporte no impide necesariamente iniciar. Esta versión puede dejar de recibir correcciones. Usa una versión con soporte cuando sea posible y respalda el mundo antes de actualizar.",
+    "acknowledge": "Entiendo que esta versión puede no recibir soporte ni correcciones.",
+    "acknowledged": "Aviso revisado para esta selección. Aún debes comprobar el funcionamiento y la compatibilidad de plugins.",
+    "noBuild": "Elige otra versión o reintenta. La instalación necesita una build disponible.",
+    "retry": "Comprobar de nuevo",
+    "official": "Descargas oficiales"
+},
   common: {
     cancel: "Cancelar",
     unknown: "Desconocido",
@@ -361,6 +407,12 @@ export const es: Dictionary = {
   },
 
   plugins: {
+    searchError: "La búsqueda falló. Reintenta; los resultados anteriores pueden estar desactualizados.",
+    sections: "Secciones de complementos",
+    browse: "Buscar plugins / mods",
+    restartHint: "Reinicia el servidor después de instalar o eliminar complementos.",
+    loadError: "No se pudieron cargar los complementos instalados.",
+
     searchPlaceholder: "Buscar {kind} para {core} {version} en Modrinth…",
     kindMods: "mods",
     kindPlugins: "plugins",

@@ -1,3 +1,4 @@
+import { DialogProvider } from "../components/Modal";
 import { render, screen, waitFor } from "@testing-library/preact";
 import { describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../i18n";
@@ -59,9 +60,11 @@ function renderDetail(server: Server) {
   render(
     <I18nProvider>
       <ToastProvider>
-        <MenuProvider>
-          <ServerDetail id="server-1" user={{ username: "admin", admin: true }} onBack={vi.fn()} />
-        </MenuProvider>
+        <DialogProvider>
+          <MenuProvider>
+            <ServerDetail id="server-1" user={{ username: "admin", admin: true }} onBack={vi.fn()} />
+          </MenuProvider>
+        </DialogProvider>
       </ToastProvider>
     </I18nProvider>,
   );

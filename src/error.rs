@@ -59,6 +59,16 @@ impl IntoResponse for ApiError {
             // An invalid transition is the client's fault, not the server's.
             ApiError::Guardian(guardian::Error::InvalidTransition { .. }) => StatusCode::CONFLICT,
             ApiError::Playit(error) => playit_status(error),
+            ApiError::Guardian(guardian::Error::Core(
+                minecraft_core::Error::UnsupportedVersion { .. }
+                | minecraft_core::Error::BuildNotFound { .. },
+            )) => StatusCode::BAD_REQUEST,
+            ApiError::Guardian(guardian::Error::Core(
+                minecraft_core::Error::Http { .. }
+                | minecraft_core::Error::Api { .. }
+                | minecraft_core::Error::HashMismatch { .. }
+                | minecraft_core::Error::SizeMismatch { .. },
+            )) => StatusCode::BAD_GATEWAY,
             ApiError::Guardian(guardian::Error::InvalidConfiguration(_))
             | ApiError::Guardian(guardian::Error::InvalidCommand(_))
             | ApiError::Guardian(guardian::Error::EulaNotAccepted)
@@ -86,6 +96,7 @@ impl IntoResponse for ApiError {
         }
 
         let message = match &self {
+            ApiError::Guardian(error) => error.client_message(),
             ApiError::Playit(_) if status.is_server_error() => {
                 playit_unavailable_message(&self).unwrap_or("external service unavailable".into())
             }
@@ -185,6 +196,24 @@ fn playit_status(error: &PlayitError) -> StatusCode {
 mod tests {
     use super::*;
     use axum::body::to_bytes;
+
+    #[tokio::test]
+    async fn core_service_failures_return_safe_actionable_errors() {
+        let response = ApiError::Guardian(guardian::Error::Core(minecraft_core::Error::Api {
+            url: "https://example.invalid/private".into(),
+            status: 429,
+            body: "sensitive upstream body".into(),
+        }))
+        .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("retry"));
+        assert!(!body.contains("private"));
+        assert!(!body.contains("sensitive"));
+    }
 
     #[tokio::test]
     async fn unexpected_errors_return_a_safe_message_and_request_id() {

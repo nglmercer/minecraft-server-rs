@@ -1,3 +1,4 @@
+import { DialogProvider } from "../components/Modal";
 import { fireEvent, render, screen, waitFor } from "@testing-library/preact";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Dashboard } from "./Dashboard";
@@ -13,6 +14,7 @@ const apiMock = vi.hoisted(() => ({
     servers_online: 0,
   }),
   power: vi.fn(),
+  compatibility: vi.fn().mockResolvedValue({ availability: "available", support: "supported", java_minimum: 21 }),
   providers: vi.fn().mockResolvedValue([{ id: "paper", server: true }]),
   versions: vi.fn().mockResolvedValue(["1.21.8"]),
   createServer: vi.fn().mockResolvedValue({}),
@@ -22,6 +24,7 @@ vi.mock("../api", () => ({ api: apiMock }));
 
 describe("Dashboard create server form", () => {
   beforeEach(() => {
+    apiMock.compatibility.mockResolvedValue({ availability: "available", support: "supported", java_minimum: 21 });
     apiMock.servers.mockResolvedValue([]);
     apiMock.system.mockResolvedValue({
       cpu_percent: 1,
@@ -41,10 +44,13 @@ describe("Dashboard create server form", () => {
       memory_total_mb: 2,
       servers_online: 0,
     });
+    localStorage.setItem("mcpanel:guide:v1:dashboard:admin", "seen");
     render(
       <I18nProvider>
         <ToastProvider>
-          <Dashboard user={{ username: "admin", admin: true }} onOpen={vi.fn()} />
+          <DialogProvider>
+            <Dashboard user={{ username: "admin", admin: true }} onOpen={vi.fn()} />
+          </DialogProvider>
         </ToastProvider>
       </I18nProvider>,
     );
@@ -60,10 +66,13 @@ describe("Dashboard create server form", () => {
       memory_total_mb: 4096,
       servers_online: 0,
     });
+    localStorage.setItem("mcpanel:guide:v1:dashboard:admin", "seen");
     render(
       <I18nProvider>
         <ToastProvider>
-          <Dashboard user={{ username: "admin", admin: true }} onOpen={vi.fn()} />
+          <DialogProvider>
+            <Dashboard user={{ username: "admin", admin: true }} onOpen={vi.fn()} />
+          </DialogProvider>
         </ToastProvider>
       </I18nProvider>,
     );
@@ -73,10 +82,13 @@ describe("Dashboard create server form", () => {
   });
 
   it("sends exactly one create request for one submit button click", async () => {
+    localStorage.setItem("mcpanel:guide:v1:dashboard:admin", "seen");
     render(
       <I18nProvider>
         <ToastProvider>
-          <Dashboard user={{ username: "admin", admin: true }} onOpen={vi.fn()} />
+          <DialogProvider>
+            <Dashboard user={{ username: "admin", admin: true }} onOpen={vi.fn()} />
+          </DialogProvider>
         </ToastProvider>
       </I18nProvider>,
     );
@@ -92,10 +104,13 @@ describe("Dashboard create server form", () => {
   });
 
   it("keeps focus on the control selected after the modal rerenders", async () => {
+    localStorage.setItem("mcpanel:guide:v1:dashboard:admin", "seen");
     render(
       <I18nProvider>
         <ToastProvider>
-          <Dashboard user={{ username: "admin", admin: true }} onOpen={vi.fn()} />
+          <DialogProvider>
+            <Dashboard user={{ username: "admin", admin: true }} onOpen={vi.fn()} />
+          </DialogProvider>
         </ToastProvider>
       </I18nProvider>,
     );
@@ -109,4 +124,23 @@ describe("Dashboard create server form", () => {
     fireEvent.input(port, { target: { value: "25566" } });
     await waitFor(() => expect(document.activeElement).toBe(port));
   });
+  it("requires reviewing ended support before creating Paper 1.21.11", async () => {
+    apiMock.compatibility.mockResolvedValue({ availability: "available", support: "unsupported", java_minimum: 21 });
+    apiMock.versions.mockResolvedValue(["1.21.11"]);
+    apiMock.createServer.mockClear();
+    localStorage.setItem("mcpanel:guide:v1:dashboard:admin", "seen");
+    render(<I18nProvider><ToastProvider><DialogProvider>
+      <Dashboard user={{ username: "admin", admin: true }} onOpen={vi.fn()} />
+    </DialogProvider></ToastProvider></I18nProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "New server" }));
+    const acknowledgement = await screen.findByRole("checkbox", { name: /I understand this version/ });
+    const create = screen.getByRole("button", { name: "Create server" });
+    expect(create).toBeDisabled();
+    fireEvent.click(acknowledgement);
+    await waitFor(() => expect(create).not.toBeDisabled());
+    fireEvent.click(create);
+    await waitFor(() => expect(apiMock.createServer).toHaveBeenCalledTimes(1));
+    expect(apiMock.createServer.mock.calls[0][0]).toMatchObject({ version: "1.21.11", java_major: 21, eula_accepted: false });
+  });
+
 });

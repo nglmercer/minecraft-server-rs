@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { api } from "../api";
+import { useServerPower } from "../useServerPower";
+import { Guide } from "../components/Guide";
+import { Compatibility } from "../components/Compatibility";
 import { Modal } from "../components/Modal";
 import { Button, Card, Field, Input, Select, StatCard, StatusPill, formatUptime } from "../components/ui";
 import * as Icon from "../components/icons";
@@ -19,6 +22,7 @@ export function Dashboard({
 }) {
   const t = useT();
   const toast = useToast();
+  const guardedPower = useServerPower();
 
   const [servers, setServers] = useState<Server[]>([]);
   const [stats, setStats] = useState<SystemStats | null>(null);
@@ -43,7 +47,8 @@ export function Dashboard({
 
   async function power(id: string, action: "start" | "stop" | "restart") {
     try {
-      await api.power(id, action);
+      const server = servers.find((item) => item.id === id);
+      if (!server || !await guardedPower(server, action)) return;
       await refresh();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : t("errors.actionFailed"));
@@ -82,6 +87,12 @@ export function Dashboard({
           </Button>
         )}
       </header>
+
+      <Guide storageKey={`dashboard:${user.username}`} steps={[
+        { title: t("guide.createTitle"), body: t("guide.createBody") },
+        { title: t("guide.launchTitle"), body: t("guide.launchBody") },
+        { title: t("guide.manageTitle"), body: t("guide.manageBody") },
+      ]} />
 
       {stats && (
         <div class="grid grid-cols-3 gap-2 sm:gap-4">
@@ -274,6 +285,7 @@ function CreateServer({
     eula_accepted: false,
   });
   const [busy, setBusy] = useState(false);
+  const [compatible, setCompatible] = useState(false);
   const busyRef = useRef(false);
 
   useEffect(() => {
@@ -281,10 +293,13 @@ function CreateServer({
   }, []);
 
   useEffect(() => {
+    let active = true;
     setVersions([]);
+    setForm((f) => ({ ...f, version: "" }));
     api
       .versions(form.core)
       .then((list) => {
+        if (!active) return;
         setVersions(list);
         const version = list[0] ?? "";
         setForm((f) => ({
@@ -295,12 +310,13 @@ function CreateServer({
           java_major: version ? recommendedJavaForVersion(version) : f.java_major,
         }));
       })
-      .catch((e) => toast.error(e.message));
+      .catch((e) => { if (active) toast.error(e.message); });
+    return () => { active = false; };
   }, [form.core]);
 
   async function submit(event?: Event) {
     event?.preventDefault();
-    if (busyRef.current || busy || !form.version) return;
+    if (busyRef.current || busy || !form.version || !compatible) return;
     busyRef.current = true;
     setBusy(true);
     try {
@@ -338,7 +354,7 @@ function CreateServer({
             type="submit"
             form="create-server-form"
             variant="primary"
-            disabled={busy || !form.version}
+            disabled={busy || !form.version || !compatible}
             data-testid="server-create"
           >
             {busy ? t("common.creating") : t("createServer.submit")}
@@ -436,6 +452,8 @@ function CreateServer({
             </Field>
           </div>
         </div>
+
+        <Compatibility core={form.core} version={form.version} javaMajor={form.java_major} onAllowedChange={setCompatible} />
 
         <label class="flex items-start gap-2.5 pt-1 text-sm">
           <input
