@@ -1,4 +1,6 @@
 import type { ComponentChildren } from "preact";
+import { lazy, Suspense } from "preact/compat";
+import { Loading } from "./components/Loading";
 import { useEffect, useState } from "preact/hooks";
 import { api } from "./api";
 import { Button } from "./components/ui";
@@ -6,15 +8,21 @@ import * as Icon from "./components/icons";
 import { Tooltip } from "./components/Tooltip";
 import { LanguagePicker } from "./components/LanguagePicker";
 import { useI18n } from "./i18n";
-import { BackupsSettings } from "./pages/BackupsSettings";
 import { Dashboard } from "./pages/Dashboard";
 import { Login } from "./pages/Login";
-import { Playit } from "./pages/Playit";
-import { Recovery } from "./pages/Recovery";
-import { ServerDetail } from "./pages/ServerDetail";
-import { Setup } from "./pages/Setup";
-import { Users } from "./pages/Users";
 import type { User } from "./types";
+
+const BackupsSettings = lazy(() => import("./pages/BackupsSettings").then(m => ({ default: m.BackupsSettings })));
+
+const Playit = lazy(() => import("./pages/Playit").then(m => ({ default: m.Playit })));
+
+const Recovery = lazy(() => import("./pages/Recovery").then(m => ({ default: m.Recovery })));
+
+const ServerDetail = lazy(() => import("./pages/ServerDetail").then(m => ({ default: m.ServerDetail })));
+
+const Setup = lazy(() => import("./pages/Setup").then(m => ({ default: m.Setup })));
+
+const Users = lazy(() => import("./pages/Users").then(m => ({ default: m.Users })));
 
 /** Where the app currently is. The hash is enough for this small panel. */
 type Route =
@@ -132,10 +140,10 @@ export function App() {
   }
 
   if (setupPath) {
-    return <Setup onDone={() => (location.href = "/")} />;
+    return <Suspense fallback={<Loading />}><Setup onDone={() => (location.href = "/")} /></Suspense>;
   }
   if (recoveryPath) {
-    return <Recovery onDone={() => (location.href = "/")} />;
+    return <Suspense fallback={<Loading />}><Recovery onDone={() => (location.href = "/")} /></Suspense>;
   }
 
   if (!user) {
@@ -233,6 +241,7 @@ export function App() {
       </nav>
 
       <main class="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
+        <Suspense fallback={<Loading />}>
         {route.page === "server" && (
           <ServerDetail
             id={route.id}
@@ -246,6 +255,7 @@ export function App() {
         {route.page === "dashboard" && (
           <Dashboard user={user} onOpen={(id) => navigate({ page: "server", id })} />
         )}
+        </Suspense>
       </main>
     </div>
   );

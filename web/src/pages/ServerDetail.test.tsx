@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../i18n";
 import { DialogProvider } from "../components/Modal";
 import { ToastProvider } from "../components/Toast";
-import { PlayitSettings } from "./ServerDetail";
+import { PlayitSettings } from "./ServerSettings";
 import type { Server, ServerPlayitView, User } from "../types";
 
 const apiMock = vi.hoisted(() => ({

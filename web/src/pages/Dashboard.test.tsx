@@ -133,7 +133,7 @@ describe("Dashboard create server form", () => {
       <Dashboard user={{ username: "admin", admin: true }} onOpen={vi.fn()} />
     </DialogProvider></ToastProvider></I18nProvider>);
     fireEvent.click(screen.getByRole("button", { name: "New server" }));
-    const acknowledgement = await screen.findByRole("checkbox", { name: /I understand this version/ });
+    const acknowledgement = await screen.findByRole("checkbox", { name: /Continue without support or fixes/ });
     const create = screen.getByRole("button", { name: "Create server" });
     expect(create).toBeDisabled();
     fireEvent.click(acknowledgement);
