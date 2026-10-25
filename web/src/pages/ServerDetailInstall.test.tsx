@@ -80,6 +80,17 @@ async function openSettings(server: Server) {
 
 describe("ServerDetail installed build", () => {
   beforeEach(() => { apiMock.compatibility.mockResolvedValue({ availability: "available", support: "supported", java_minimum: 21 }); });
+  it("opens the EULA acceptance dialog from the warning", async () => {
+    await openSettings(makeServer({ eula_accepted: false }));
+    fireEvent.click(screen.getByRole("button", { name: "Accept EULA and start" }));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Minecraft EULA" })).toHaveAttribute(
+      "href", "https://www.minecraft.net/eula",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
   it("renders exactly one Install button for a fresh server", async () => {
     await openSettings(makeServer({ installed: null, needs_install: true }));
     expect(screen.getAllByRole("button", { name: "Install" })).toHaveLength(1);

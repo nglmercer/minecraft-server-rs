@@ -27,10 +27,11 @@ export const es: Dictionary = {
     "settings": "Revisa Java, memoria, EULA y la build instalada. Las opciones de red y recuperación se despliegan por separado. Los ajustes se aplican en el siguiente inicio."
 },
   compatibility: {
+    details: "Detalles",
     unverified: "No se pudo verificar el servicio de descargas. Esto no determina si la versión tiene soporte o puede instalarse. Reintenta o continúa explícitamente sin verificación.",
     acknowledgeUnknown: "Entiendo que la disponibilidad de builds no se ha verificado.",
     "title": "Comprobaciones de versión",
-    "available": "Hay una build disponible para descargar. Esto no garantiza la compatibilidad de plugins o del mundo.",
+    "available": "Build disponible para descargar.",
     "unavailable": "No se encontró una build descargable para esta selección.",
     "unknown": "No se pudo comprobar la disponibilidad. Reintenta antes de instalar.",
     "support": {
@@ -42,7 +43,7 @@ export const es: Dictionary = {
     "java": "Java requerido: {version} o posterior.",
     "javaMismatch": "Java {selected} es inferior al requisito Java {required}. Cámbialo antes de iniciar.",
     "warning": "El fin del soporte no impide necesariamente iniciar. Esta versión puede dejar de recibir correcciones. Usa una versión con soporte cuando sea posible y respalda el mundo antes de actualizar.",
-    "acknowledge": "Entiendo que esta versión puede no recibir soporte ni correcciones.",
+    "acknowledge": "Continuar sin soporte ni correcciones",
     "acknowledged": "Aviso revisado para esta selección. Aún debes comprobar el funcionamiento y la compatibilidad de plugins.",
     "noBuild": "Elige otra versión o reintenta. La instalación necesita una build disponible.",
     "retry": "Comprobar de nuevo",
@@ -357,7 +358,7 @@ export const es: Dictionary = {
     storageUsage: "Uso de disco",
     storageShort: "Disco",
     eulaWarning:
-      "No se ha aceptado el EULA de Minecraft para este servidor, así que no arrancará. Acéptalo en Ajustes.",
+      "Acepta el EULA de Minecraft para iniciar este servidor. Revísalo y confírmalo en el diálogo de aceptación.",
     tabs: {
       console: "Consola",
       files: "Archivos",
@@ -501,7 +502,7 @@ export const es: Dictionary = {
     installedAs: "{core} {version} · build {build} · Java {java}",
     installedOn: "Instalado el {date}",
     notInstalled: "Aún no hay nada instalado. Se descarga en el primer arranque.",
-    needsInstall: "El próximo arranque descargará un artefacto nuevo, porque la configuración ya no coincide con lo instalado.",
+    needsInstall: "Versión cambiada. Instala para aplicar.",
     pendingRestart: "El servidor en marcha sigue usando la configuración con la que arrancó. Reinícialo para aplicar los cambios guardados.",
     pinned: "Reiniciar nunca cambia la build. Usa Actualizar para tomar una nueva de forma deliberada.",
     update: "Actualizar / reinstalar",
@@ -515,6 +516,12 @@ export const es: Dictionary = {
     extraFlags: "Flags adicionales de la JVM",
     extraFlagsHint: "Separados por espacios, se insertan antes de -jar.",
     eulaAccepted: "EULA de Minecraft aceptado",
+    changeVersion: "Cambiar núcleo / versión",
+    coreType: "Núcleo del servidor",
+    minecraftVersion: "Versión de Minecraft",
+    javaVersion: "Versión de Java",
+    selectVersion: "Selecciona una versión",
+    changeVersionHelp: "Crea una copia de seguridad primero. Cambiar de núcleo o volver a una versión anterior puede hacer incompatibles los mundos y plugins. Guarda la configuración y usa Instalar para descargar el núcleo y la versión seleccionados. El servidor debe estar detenido.",
     maxRetries: "Intentos máximos de reinicio",
     retryDelay: "Espera entre intentos (s)",
     stopTimeout: "Tiempo límite de apagado (s)",

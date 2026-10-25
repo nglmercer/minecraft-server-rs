@@ -25,10 +25,11 @@ export const en = {
     "settings": "Review Java, memory, EULA and the installed build. Network and recovery options expand separately. Settings apply on the next start."
 },
   compatibility: {
+    details: "Details",
     unverified: "The download service could not be verified. This does not establish whether the version is supported or installable. Retry, or explicitly continue without verification.",
     acknowledgeUnknown: "I understand that build availability has not been verified.",
     "title": "Version checks",
-    "available": "A downloadable build is available. This does not guarantee plugins or the world are compatible.",
+    "available": "A downloadable build is available.",
     "unavailable": "No downloadable build was found for this selection.",
     "unknown": "Build availability could not be verified. Retry before installing.",
     "support": {
@@ -40,7 +41,7 @@ export const en = {
     "java": "Required Java: {version} or newer.",
     "javaMismatch": "Selected Java {selected} is below the required Java {required}. Change it before starting.",
     "warning": "Ended support does not necessarily prevent startup. This version may no longer receive fixes. Use a supported version where possible and back up the world before upgrading.",
-    "acknowledge": "I understand this version may no longer receive support or fixes.",
+    "acknowledge": "Continue without support or fixes",
     "acknowledged": "Warning reviewed for this selection. Runtime and plugin compatibility still need verification.",
     "noBuild": "Choose another version or retry. Installing cannot succeed without an available server build.",
     "retry": "Check again",
@@ -354,7 +355,7 @@ export const en = {
     storageUsage: "Storage usage",
     storageShort: "Disk",
     eulaWarning:
-      "The Minecraft EULA has not been accepted for this server, so it will refuse to start. Accept it under Settings.",
+      "Accept the Minecraft EULA to start this server. Review and confirm it in the acceptance dialog.",
     tabs: {
       console: "Console",
       files: "Files",
@@ -496,7 +497,7 @@ export const en = {
     installedAs: "{core} {version} · build {build} · Java {java}",
     installedOn: "Installed {date}",
     notInstalled: "Nothing installed yet. It is downloaded on the first start.",
-    needsInstall: "The next start will download a new artifact, because the configuration no longer matches what is installed.",
+    needsInstall: "Version changed. Install to apply.",
     pendingRestart: "The running server still uses the configuration it was started with. Restart it to apply the saved changes.",
     pinned: "Restarting never changes the build. Use Update to take a newer one deliberately.",
     update: "Update / reinstall",
@@ -510,6 +511,12 @@ export const en = {
     extraFlags: "Extra JVM flags",
     extraFlagsHint: "Space separated, inserted before -jar.",
     eulaAccepted: "Minecraft EULA accepted",
+    changeVersion: "Change core / version",
+    coreType: "Server core",
+    minecraftVersion: "Minecraft version",
+    javaVersion: "Java version",
+    selectVersion: "Select a version",
+    changeVersionHelp: "Back up your server first. Changing cores or downgrading Minecraft can make worlds and plugins incompatible. Save the configuration, then use Install to download the selected core and version. The server must be stopped.",
     maxRetries: "Max restart attempts",
     retryDelay: "Retry delay (s)",
     stopTimeout: "Graceful stop timeout (s)",

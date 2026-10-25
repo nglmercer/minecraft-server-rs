@@ -74,12 +74,12 @@ export function Compatibility({
   return (
     <section
       aria-label={t("compatibility.title")}
-      class="space-y-3 rounded-xl border border-ink-700 p-4"
+      class="space-y-2 text-sm"
     >
-      <h3 class="font-semibold">
+      <h3 class="text-xs font-medium text-fg-muted">
         {t("compatibility.title")} · {core} {version}
       </h3>
-      <div class="text-sm" aria-live="polite">
+      <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-fg-muted" aria-live="polite">
         {loading ? (
           t("common.loading")
         ) : (
@@ -102,8 +102,7 @@ export function Compatibility({
       )}
       {needsReview && (
         <Banner kind="info">
-          <p>{t(warning ? "compatibility.warning" : "compatibility.unverified")}</p>
-          <label class="mt-2 flex items-start gap-2">
+          <label class="flex items-start gap-2">
             <input
               type="checkbox"
               checked={acknowledged}
@@ -115,17 +114,19 @@ export function Compatibility({
             />
             {t(warning ? "compatibility.acknowledge" : "compatibility.acknowledgeUnknown")}
           </label>
-          {acknowledged && (
-            <p class="mt-2">{t("compatibility.acknowledged")}</p>
-          )}
+          <details class="mt-2 text-xs">
+            <summary class="cursor-pointer text-fg-muted">{t("compatibility.details")}</summary>
+            <p class="mt-2">{t(warning ? "compatibility.warning" : "compatibility.unverified")}</p>
+          </details>
         </Banner>
       )}
       {result?.availability === "unavailable" && (
         <Banner kind="error">{t("compatibility.noBuild")}</Banner>
       )}
-      <div class="flex flex-wrap items-center gap-3 text-sm">
+      <div class="flex flex-wrap items-center gap-3 text-xs">
         <Button
           type="button"
+          variant="ghost"
           disabled={loading}
           onClick={() => setAttempt((n) => n + 1)}
         >

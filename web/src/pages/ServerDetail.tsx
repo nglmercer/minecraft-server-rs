@@ -4,6 +4,7 @@ import { api } from "../api";
 import { useServerPower } from "../useServerPower";
 import { Guide } from "../components/Guide";
 import { Compatibility } from "../components/Compatibility";
+import { ChangeServerVersion } from "../components/ChangeServerVersion";
 import { Backups } from "../components/Backups";
 import { Console } from "../components/Console";
 import { Files } from "../components/Files";
@@ -320,7 +321,16 @@ export function ServerDetail({
       }))} />
       <ServerActivity status={server.status} progress={progress} />
 
-      {!server.eula_accepted && <Banner kind="info">{t("server.eulaWarning")}</Banner>}
+      {!server.eula_accepted && (
+        <Banner kind="info">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <span>{t("server.eulaWarning")}</span>
+            <Button disabled={!actions.start} onClick={() => void power("start")}>
+              {t("launch.acceptAndStart")}
+            </Button>
+          </div>
+        </Banner>
+      )}
 
       {tab === "console" && (
         <div class="grid grid-cols-3 gap-2 sm:gap-4">
@@ -428,6 +438,7 @@ function Installed({ server, onChanged }: { server: Server; onChanged: () => voi
   const dialogs = useDialogs();
   const [busy, setBusy] = useState(false);
   const [compatible, setCompatible] = useState(false);
+  const [changingVersion, setChangingVersion] = useState(false);
 
   const lifecycleBusy = server.status !== "offline" && server.status !== "crashed";
 
@@ -468,7 +479,6 @@ function Installed({ server, onChanged }: { server: Server; onChanged: () => voi
 
   return (
     <Card title={t("settings.installSection")}>
-      <Compatibility core={server.core} version={server.version} javaMajor={server.java_major} onAllowedChange={setCompatible} />
       {server.installed ? (
         <div class="space-y-1">
           <p class="font-mono text-sm">
@@ -489,7 +499,9 @@ function Installed({ server, onChanged }: { server: Server; onChanged: () => voi
         <p class="text-sm text-fg-muted">{t("settings.notInstalled")}</p>
       )}
 
-      <p class="mt-3 text-xs leading-relaxed text-fg-muted">{t("settings.pinned")}</p>
+      <div class="mt-4 border-t border-ink-700 pt-3">
+        <Compatibility core={server.core} version={server.version} javaMajor={server.java_major} onAllowedChange={setCompatible} />
+      </div>
 
       {server.needs_install && server.installed && (
         <div class="mt-3">
@@ -504,6 +516,10 @@ function Installed({ server, onChanged }: { server: Server; onChanged: () => voi
       )}
 
       <div class="mt-4 flex flex-col gap-2 sm:flex-row">
+        <Button disabled={busy || lifecycleBusy} onClick={() => setChangingVersion(true)}
+          title={lifecycleBusy ? t("settings.mustStopToUpdate") : undefined}>
+          {t("settings.changeVersion")}
+        </Button>
         {/* One button for both cases: a fresh server has nothing installed
             and always needs an install, so two separate conditions rendered
             the same Install button twice. */}
@@ -518,15 +534,16 @@ function Installed({ server, onChanged }: { server: Server; onChanged: () => voi
             {busy ? t("settings.updating") : t("common.install")}
           </Button>
         )}
-        <Button
+        {!server.needs_install && server.installed && <Button
           class="w-full sm:w-auto"
           disabled={busy || lifecycleBusy || !compatible}
           title={lifecycleBusy ? t("settings.mustStopToUpdate") : undefined}
           onClick={update}
         >
           {busy ? t("settings.updating") : t("settings.update")}
-        </Button>
+        </Button>}
       </div>
+      {changingVersion && <ChangeServerVersion server={server} onClose={() => setChangingVersion(false)} onSaved={onChanged} />}
     </Card>
   );
 }
