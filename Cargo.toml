@@ -1,6 +1,67 @@
+[package]
+name = "panel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A single-binary Minecraft server control panel"
+build = "build.rs"
+
+[[bin]]
+name = "mcpanel"
+path = "src/main.rs"
+
+[features]
+# Forwarded to the tray crate; see its manifest for why this is off by default.
+linux-tray = ["tray/linux-tray"]
+
+[dependencies]
+guardian = { path = "crates/guardian" }
+playit-integration = { path = "crates/playit-integration" }
+tray = { path = "crates/tray" }
+java-path.workspace = true
+minecraft-core.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+
+axum = { version = "0.8", features = ["ws", "macros", "multipart"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "limit"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+rust-embed = { version = "8", features = ["interpolate-folder-path"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+rand = "0.9"
+argon2 = "0.5"
+password-hash = { version = "0.5", features = ["std"] }
+sysinfo = "0.33"
+mime_guess = "2"
+tokio-util = { version = "0.7", features = ["io"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+futures-util = "0.3"
+time = { version = "0.3", features = ["formatting", "parsing"] }
+sha1 = "0.10"
+sha2 = "0.10"
+subtle = "2"
+base64 = "0.22"
+jsonwebtoken = { version = "9" }
+async-trait = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+playit-runtime.workspace = true
+tower = { version = "0.5", features = ["util"] }
+tokio-tungstenite = "0.29"
+
 [workspace]
 resolver = "2"
-members = ["crates/guardian", "crates/panel", "crates/playit-integration", "crates/tray"]
+members = ["crates/guardian", "crates/playit-integration", "crates/tray"]
 exclude = ["vendor"]
 
 [workspace.package]
