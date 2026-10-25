@@ -195,6 +195,7 @@ fn playit_status(error: &PlayitError) -> StatusCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
 
     #[tokio::test]
     async fn core_service_failures_return_safe_actionable_errors() {
