@@ -19,7 +19,7 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(mcpanel_console)");
 
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets this"));
-    let dist = manifest.join("../../web/dist");
+    let dist = manifest.join("web/dist");
 
     if let Err(e) = std::fs::create_dir_all(&dist) {
         // Not fatal on its own: the derive below produces the real error if the

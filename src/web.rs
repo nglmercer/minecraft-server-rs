@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use rust_embed::RustEmbed;
 
 #[derive(RustEmbed)]
-#[folder = "$CARGO_MANIFEST_DIR/../../web/dist"]
+#[folder = "$CARGO_MANIFEST_DIR/web/dist"]
 struct Assets;
 
 /// Shown when the binary was built without running the frontend build first.
