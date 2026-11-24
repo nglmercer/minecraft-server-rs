@@ -178,7 +178,7 @@ async fn build_with_cargo(
                 "--profile",
                 "fast",
                 "-p",
-                "horizon-client",
+                "horizon-game",
                 "--no-default-features",
                 "--bin",
                 "horizon-client",

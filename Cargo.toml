@@ -23,6 +23,7 @@ minecraft-core.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+toml_edit = "0.25"
 thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true

@@ -179,7 +179,7 @@ class InstallHorizonTests(unittest.TestCase):
             f"#!{shell}\nset -eu\n"
             'printf "%s\\n" "$*" >> "$HORIZON_TEST_CARGO_LOG"\n'
             'mkdir -p "$CARGO_TARGET_DIR/debug"\n'
-            'case "$*" in *"-p horizon-client"*) name=horizon-client;; '
+            'case "$*" in *"-p horizon-game"*) name=horizon-client;; '
             '*"-p horizon-server"*) name=horizon-server;; '
             '*"-p horizon-prepare"*) name=horizon-prepare;; *) exit 1;; esac\n'
             'printf "#!%s\\necho Horizon Minecraft 26.3\\nexit 0\\n" "$HORIZON_TEST_SHELL" > "$CARGO_TARGET_DIR/debug/$name"\n'
@@ -195,7 +195,7 @@ class InstallHorizonTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = log.read_text().splitlines()
         self.assertEqual(len(calls), 3)
-        self.assertIn("--locked -p horizon-client --no-default-features --bin horizon-client", calls[0])
+        self.assertIn("--locked -p horizon-game --no-default-features --bin horizon-client", calls[0])
         self.assertIn("--locked -p horizon-server --bin horizon-server", calls[1])
         self.assertIn("--locked -p horizon-prepare --bin horizon-prepare", calls[2])
         self.assertTrue((self.data / "horizon/horizon-engine").is_file())

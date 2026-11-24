@@ -132,7 +132,7 @@ if [[ -z "$build_dir" ]]; then
   fi
   build_args=(build --locked)
   [[ "$profile" == release ]] && build_args+=(--release)
-  (cd "$source_dir" && cargo "${build_args[@]}" -p horizon-client --no-default-features --bin horizon-client)
+  (cd "$source_dir" && cargo "${build_args[@]}" -p horizon-game --no-default-features --bin horizon-client)
   (cd "$source_dir" && cargo "${build_args[@]}" -p horizon-server --bin horizon-server)
   (cd "$source_dir" && cargo "${build_args[@]}" -p horizon-prepare --bin horizon-prepare)
   target_dir="${CARGO_TARGET_DIR:-target}"

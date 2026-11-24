@@ -6,6 +6,7 @@ pub mod backups;
 pub mod catalog;
 pub mod console;
 pub mod files;
+pub mod horizon_settings;
 pub mod mods;
 pub mod playit;
 pub mod recovery;
@@ -36,7 +37,8 @@ pub fn router_with_limits(limits: ResourceLimits) -> Router<Arc<AppState>> {
         .merge(console::router())
         .merge(files::router_with_limits(limits))
         .merge(backups::router())
-        .merge(mods::router());
+        .merge(mods::router())
+        .merge(horizon_settings::server_router());
 
     Router::new()
         .nest("/auth", auth::router())

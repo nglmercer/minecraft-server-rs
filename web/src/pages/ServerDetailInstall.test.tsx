@@ -15,6 +15,12 @@ const apiMock = vi.hoisted(() => ({
   reinstall: vi.fn(),
   prepare: vi.fn(),
   installBundledHorizon: vi.fn().mockResolvedValue({ ok: true }),
+  horizonSettings: vi.fn().mockResolvedValue({
+    online_mode: true,
+    accept_older_clients: false,
+    enforce_secure_profile: true,
+  }),
+  updateHorizonSettings: vi.fn(),
 }));
 
 vi.mock("../api", () => ({

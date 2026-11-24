@@ -178,6 +178,13 @@ export interface ServerPlayitView {
   disposition?: PlayitAttachDisposition | null;
 }
 
+/** Horizon server.toml / server.properties keys that decide who can join. */
+export interface HorizonSettings {
+  online_mode: boolean;
+  accept_older_clients: boolean;
+  enforce_secure_profile: boolean;
+}
+
 /** Mirrors the flattened `ServerView` returned by the API. */
 export interface Server {
   id: string;

@@ -100,8 +100,7 @@ async fn a_server_that_logs_done_becomes_online_and_stops_gracefully() {
 }
 
 #[cfg(unix)]
-#[tokio::test(flavor = "multi_thread")]
-async fn horizon_force_stop_uses_advertised_supervisor_protocol() {
+async fn horizon_force_stop_with_protocol(banner: &str, command: &str) {
     use std::os::unix::fs::PermissionsExt;
     let root = tempfile::tempdir().unwrap();
     let install = root.path().join("horizon");
@@ -114,7 +113,7 @@ async fn horizon_force_stop_uses_advertised_supervisor_protocol() {
     } else {
         "/bin/sh"
     };
-    let script = format!("#!{shell}\nprintf '%s\\n' '[mcpanel] force-stop-v1' '[Server thread/INFO]: Done (0.1s)! For help, type help'\nwhile IFS= read -r line; do\n  [ \"$line\" = mcpanel:force-stop ] && exit 0\ndone\n");
+    let script = format!("#!{shell}\nprintf '%s\\n' '{banner}' '[Server thread/INFO]: Done (0.1s)! For help, type help'\nwhile IFS= read -r line; do\n  [ \"$line\" = {command} ] && exit 0\ndone\n");
     for name in ["horizon-server", "horizon-engine"] {
         let path = install.join(name);
         std::fs::write(&path, script.as_bytes()).unwrap();
@@ -136,6 +135,18 @@ async fn horizon_force_stop_uses_advertised_supervisor_protocol() {
     guardian.kill().await.unwrap();
     await_status(&mut events, ServerStatus::Offline).await;
     assert!(!guardian.snapshot().await.force_kill_available);
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn horizon_force_stop_uses_advertised_supervisor_protocol() {
+    horizon_force_stop_with_protocol("[horizon] force-stop-v1", "horizon:force-stop").await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn horizon_force_stop_accepts_the_legacy_fork_protocol() {
+    horizon_force_stop_with_protocol("[mcpanel] force-stop-v1", "mcpanel:force-stop").await;
 }
 
 #[cfg(unix)]

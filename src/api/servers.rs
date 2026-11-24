@@ -1151,8 +1151,14 @@ mod tests {
         active.insert("h".into(), horizon.config.clone());
 
         // 3 GiB of Java heap plus a Horizon "reservation" of 4 GiB fits 4 GiB.
-        validate_aggregate_memory(&servers, &active, None, Some(horizon.config.quota_memory_mb()), 4096)
-            .unwrap();
+        validate_aggregate_memory(
+            &servers,
+            &active,
+            None,
+            Some(horizon.config.quota_memory_mb()),
+            4096,
+        )
+        .unwrap();
         validate_record_with_max(1024, &horizon).unwrap();
     }
 

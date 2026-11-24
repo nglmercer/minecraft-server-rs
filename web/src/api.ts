@@ -5,6 +5,7 @@ import type {
   ChangeAccountResult,
   ConsoleLine,
   FileEntry,
+  HorizonSettings,
   Installed,
   JavaInstall,
   PanelUser,
@@ -244,6 +245,15 @@ export const api = {
   server: (id: string) => request<Server>(`/servers/${id}`),
 
   serverPlayit: (id: string) => request<ServerPlayitView>(`/servers/${id}/playit`),
+
+  horizonSettings: (id: string) =>
+    request<HorizonSettings>(`/servers/${id}/horizon-settings`),
+
+  updateHorizonSettings: (id: string, body: Partial<HorizonSettings>) =>
+    request<HorizonSettings>(`/servers/${id}/horizon-settings`, {
+      method: "PATCH",
+      body: json(body),
+    }),
 
   attachPlayit: (id: string, name?: string) =>
     request<ServerPlayitView>(`/servers/${id}/playit`, {

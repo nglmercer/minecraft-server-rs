@@ -135,8 +135,10 @@ struct RunState {
     /// Quota and port accounting has to reason about this value, not the
     /// pending one, for as long as the process exists.
     active: Option<ServerConfig>,
-    /// The current Horizon supervisor advertised the force-stop protocol.
-    horizon_force_stop: bool,
+    /// The force-stop command the current Horizon supervisor advertised, if any. Upstream
+    /// uses `[horizon]`; the older fork's `[mcpanel]` banner is still accepted for hosts
+    /// that have not replaced their binaries yet.
+    horizon_force_stop: Option<&'static [u8]>,
     /// Set by `stop`/`kill` so the supervisor knows the exit was requested.
     intentional: bool,
     /// Handle to the in-flight provisioning task, so it can be abandoned.
@@ -353,7 +355,7 @@ impl Guardian {
                     .active
                     .as_ref()
                     .is_some_and(|c| c.core.eq_ignore_ascii_case("horizon"))
-                    || state.horizon_force_stop),
+                    || state.horizon_force_stop.is_some()),
         }
     }
 
@@ -961,7 +963,7 @@ impl Guardian {
                 return Err(Error::StartCancelled);
             }
             state.generation += 1;
-            state.horizon_force_stop = false;
+            state.horizon_force_stop = None;
             state.pid = Some(pid);
             state.stdin = stdin;
             state.started_at = Some(Instant::now());
@@ -1021,15 +1023,19 @@ impl Guardian {
                     return;
                 };
 
-                if stream == Stream::Stdout
-                    && core.eq_ignore_ascii_case("horizon")
-                    && line == "[mcpanel] force-stop-v1"
-                {
-                    let mut state = guardian.state.lock().await;
-                    if state.generation == generation && state.child.is_some() {
-                        state.horizon_force_stop = true;
+                if stream == Stream::Stdout && core.eq_ignore_ascii_case("horizon") {
+                    let command = match line.as_str() {
+                        "[horizon] force-stop-v1" => Some(&b"horizon:force-stop\n"[..]),
+                        "[mcpanel] force-stop-v1" => Some(&b"mcpanel:force-stop\n"[..]),
+                        _ => None,
+                    };
+                    if let Some(command) = command {
+                        let mut state = guardian.state.lock().await;
+                        if state.generation == generation && state.child.is_some() {
+                            state.horizon_force_stop = Some(command);
+                        }
+                        continue;
                     }
-                    continue;
                 }
 
                 if stream == Stream::Stdout && line_means_online(&core, &line) {
@@ -1403,24 +1409,21 @@ impl Guardian {
                     .as_ref()
                     .is_some_and(|config| config.core.eq_ignore_ascii_case("horizon"))
                 {
-                    if !state.horizon_force_stop {
-                        return Err(Error::InvalidConfiguration(
+                    let command = state.horizon_force_stop.ok_or_else(|| {
+                        Error::InvalidConfiguration(
                             "this Horizon supervisor does not support safe force-stop; stop it through its console or host tools".into(),
-                        ));
-                    }
+                        )
+                    })?;
                     let input = state.stdin.as_mut().ok_or_else(|| {
                         Error::InvalidConfiguration(
                             "Horizon supervisor stdin is unavailable".into(),
                         )
                     })?;
-                    input
-                        .write_all(b"mcpanel:force-stop\n")
-                        .await
-                        .map_err(|e| {
-                            Error::InvalidConfiguration(format!(
-                                "could not send Horizon force-stop: {e}"
-                            ))
-                        })?;
+                    input.write_all(command).await.map_err(|e| {
+                        Error::InvalidConfiguration(format!(
+                            "could not send Horizon force-stop: {e}"
+                        ))
+                    })?;
                     input.flush().await.map_err(|e| {
                         Error::InvalidConfiguration(format!(
                             "could not send Horizon force-stop: {e}"

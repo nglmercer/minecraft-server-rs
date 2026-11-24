@@ -3,6 +3,7 @@ import { Loading } from "../components/Loading";
 import { useRef, useState } from "preact/hooks";
 import { api } from "../api";
 import { Compatibility } from "../components/Compatibility";
+import { HorizonClientSettings } from "./HorizonClientSettings";
 import {
   Banner,
   Button,
@@ -333,6 +334,17 @@ export function Settings({
       )}
 
       <Installed server={server} onChanged={onSaved} admin={user.admin} />
+
+      {server.core === "horizon" && (
+        <details class="rounded-xl border border-ink-700 p-4">
+          <summary class="cursor-pointer font-semibold">
+            {t("settings.horizonClientsSection")}
+          </summary>
+          <div class="mt-4">
+            <HorizonClientSettings serverId={server.id} />
+          </div>
+        </details>
+      )}
 
       <details class="rounded-xl border border-ink-700 p-4">
         <summary class="cursor-pointer font-semibold">{t("settings.recoverySection")}</summary>

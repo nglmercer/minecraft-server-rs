@@ -8,4 +8,4 @@
 [submodule "vendor/horizon"]
 	path = vendor/horizon
 	url = https://github.com/hernan-lc/horizon.git
-	branch = migrate/automatic-horizon
+	branch = vendor/gaysermc

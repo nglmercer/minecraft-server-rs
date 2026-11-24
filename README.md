@@ -89,7 +89,7 @@ Browse all guides in [`docs/`](docs/README.md). Security disclosure policy is in
 | `web` | Vite + Preact + TypeScript + Tailwind v4 frontend. |
 | `vendor/java-path-rs` | Submodule: Java discovery and provisioning. |
 | `vendor/minecraft-core-rs` | Submodule: server artifact resolution and download. |
-| `vendor/horizon` | Pinned Horizon fork, including the Termux dedicated-server changes. |
+| `vendor/horizon` | Pinned vendored Horizon runtime (`hernan-lc/horizon`, branch `vendor/gaysermc`), based on upstream `a0c8249062`. |
 
 Runtime lives under `--data-dir` (`panel.json`, `playit/secret.toml`, `jdks/`, `servers/<uuid>/`, `backups/<uuid>/`). Details in [Getting Started](docs/getting-started.md) and [Architecture](docs/architecture.md).
 

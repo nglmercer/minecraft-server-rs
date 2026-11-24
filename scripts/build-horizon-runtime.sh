@@ -31,7 +31,7 @@ else
   target_args=(--target "$horizon_target")
 fi
 manifest="$source_dir/Cargo.toml"
-"${cargo_cmd[@]}" build --manifest-path "$manifest" --release --locked "${target_args[@]}" -p horizon-client --no-default-features --bin horizon-client
+"${cargo_cmd[@]}" build --manifest-path "$manifest" --release --locked "${target_args[@]}" -p horizon-game --no-default-features --bin horizon-client
 "${cargo_cmd[@]}" build --manifest-path "$manifest" --release --locked "${target_args[@]}" -p horizon-server --bin horizon-server -p horizon-prepare --bin horizon-prepare
 
 suffix=""
